@@ -200,4 +200,6 @@ class GainLoss(AbstractEntry):
             if not self.taxable_event.is_earning():
                 raise RP2RuntimeError("Internal error: acquired lot is None but taxable event is not an earning")
             return False
-        return (self.taxable_event.timestamp - self.acquired_lot.cost_basis_timestamp).days >= self.configuration.country.get_long_term_capital_gain_period()
+        # IRS rule: "more than one year" means strictly greater than the threshold (not >=).
+        # A holding period of exactly 365 days is short-term; 366+ days is long-term.
+        return (self.taxable_event.timestamp - self.acquired_lot.cost_basis_timestamp).days > self.configuration.country.get_long_term_capital_gain_period()
