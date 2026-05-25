@@ -21,7 +21,7 @@ from importlib import import_module
 from pathlib import Path
 from pkgutil import iter_modules
 from types import ModuleType
-from typing import Dict, List, Set
+from typing import Dict, List, Optional, Set
 
 from prezzemolo.avl_tree import AVLTree
 
@@ -40,7 +40,7 @@ from rp2.input_data import InputData
 from rp2.localization import set_generation_language
 from rp2.logger import LOG_FILE, LOGGER
 from rp2.ods_parser import open_ods, parse_ods
-from rp2.tax_engine import compute_tax
+from rp2.tax_engine import compute_tax, compute_tax_per_wallet
 
 _VERSION: str = "1.7.2"
 
@@ -104,6 +104,7 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
 
         old_year: int = MIN_DATE.year
         years_2_accounting_methods: AVLTree[int, AbstractAccountingMethod] = AVLTree()
+        transfer_semantics: Optional[AbstractAccountingMethod] = None
         for year, accounting_method_name in years_2_accounting_method_names.items():
             try:
                 accounting_method_module: ModuleType = import_module(
@@ -116,6 +117,8 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
                 LOGGER.error("Accounting method plugin %s doesn't have an AccountingMethod class", accounting_method_name)
                 sys.exit(1)
             accounting_method: AbstractAccountingMethod = accounting_method_module.AccountingMethod()
+            if transfer_semantics is None:
+                transfer_semantics = accounting_method
             if len(years_2_accounting_method_names) == 1:
                 LOGGER.info("Accounting method: %s", accounting_method_name)
             else:
@@ -151,7 +154,18 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
             input_data: InputData = parse_ods(configuration=configuration, asset=asset, input_file_handle=input_file_handle)
             LOGGER.debug("InputData object: %s", input_data)
 
-            computed_data: ComputedData = compute_tax(configuration=configuration, accounting_engine=accounting_engine, input_data=input_data)
+            if args.per_wallet:
+                assert transfer_semantics is not None
+                LOGGER.info("Lot tracking: per-wallet (IRS 2025+ compliance)")
+                computed_data: ComputedData = compute_tax_per_wallet(
+                    configuration=configuration,
+                    accounting_engine=accounting_engine,
+                    input_data=input_data,
+                    transfer_semantics=transfer_semantics,
+                )
+            else:
+                LOGGER.info("Lot tracking: universal")
+                computed_data: ComputedData = compute_tax(configuration=configuration, accounting_engine=accounting_engine, input_data=input_data)
             LOGGER.debug("ComputedData object: %s", computed_data)
 
             asset_to_computed_data[asset] = computed_data
@@ -335,6 +349,17 @@ def _setup_argument_parser(country: AbstractCountry) -> ArgumentParser:
         help="Prepend output file names with PREFIX",
         metavar="PREFIX",
         type=str,
+    )
+    parser.add_argument(
+        "-w",
+        "--per-wallet",
+        action="store_true",
+        dest="per_wallet",
+        default=False,
+        help=(
+            "use per-wallet lot tracking (required for transactions on or after Jan 1, 2025 "
+            "under IRS digital asset regulations)"
+        ),
     )
     parser.add_argument(
         "-t",

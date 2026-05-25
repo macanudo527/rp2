@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Iterable, Iterator, Optional, cast
+from typing import Dict, Iterable, Iterator, Optional, cast
 
 from rp2.abstract_transaction import AbstractTransaction
 from rp2.accounting_engine import (
@@ -25,11 +25,13 @@ from rp2.computed_data import ComputedData
 from rp2.configuration import MAX_DATE, MIN_DATE, Configuration
 from rp2.gain_loss import GainLoss
 from rp2.gain_loss_set import GainLossSet
-from rp2.in_transaction import InTransaction
+from rp2.abstract_accounting_method import AbstractAccountingMethod
+from rp2.in_transaction import Account, InTransaction
 from rp2.input_data import InputData
 from rp2.logger import LOGGER
 from rp2.rp2_decimal import ZERO, RP2Decimal
-from rp2.rp2_error import RP2RuntimeError, RP2ValueError
+from rp2.rp2_error import RP2RuntimeError, RP2TypeError, RP2ValueError
+from rp2.transfer_analyzer import TransferAnalyzer
 from rp2.transaction_set import TransactionSet
 
 
@@ -83,7 +85,8 @@ def _create_unfiltered_gain_and_loss_set(
     taxable_event_iterator: Iterator[AbstractTransaction] = iter(cast(Iterable[AbstractTransaction], unfiltered_taxable_event_set))
     acquired_lot_iterator: Iterator[InTransaction] = iter(cast(Iterable[InTransaction], input_data.unfiltered_in_transaction_set))
 
-    new_accounting_engine.initialize(taxable_event_iterator, acquired_lot_iterator)
+    partial_amounts = input_data.in_transaction_2_actual_amount
+    new_accounting_engine.initialize(taxable_event_iterator, acquired_lot_iterator, partial_amounts if partial_amounts else None)
 
     try:
         gain_loss: GainLoss
@@ -180,3 +183,39 @@ def _create_unfiltered_gain_and_loss_set(
         pass
 
     return gain_loss_set
+
+
+def compute_tax_per_wallet(
+    configuration: Configuration,
+    accounting_engine: AccountingEngine,
+    input_data: InputData,
+    transfer_semantics: AbstractAccountingMethod,
+) -> ComputedData:
+    Configuration.type_check("configuration", configuration)
+    AccountingEngine.type_check("accounting_engine", accounting_engine)
+    InputData.type_check("input_data", input_data)
+    if not isinstance(transfer_semantics, AbstractAccountingMethod):
+        raise RP2TypeError(f"Parameter 'transfer_semantics' is not of type AbstractAccountingMethod: {transfer_semantics}")
+
+    transfer_analyzer = TransferAnalyzer(configuration, transfer_semantics, input_data)
+    wallet_to_input_data: Dict[Account, InputData] = transfer_analyzer.analyze()
+    LOGGER.info("per_wallet: found %d wallets for asset %s", len(wallet_to_input_data), input_data.asset)
+
+    unfiltered_taxable_event_set: TransactionSet = input_data.create_unfiltered_taxable_event_set(configuration)
+    merged_gain_loss_set: GainLossSet = GainLossSet(configuration, input_data.asset, MIN_DATE, MAX_DATE)
+
+    for account, wallet_input_data in wallet_to_input_data.items():
+        LOGGER.info("per_wallet: computing gain/loss for wallet %s", account)
+        wallet_taxable_event_set = wallet_input_data.create_unfiltered_taxable_event_set(configuration)
+        wallet_gain_loss_set = _create_unfiltered_gain_and_loss_set(configuration, accounting_engine, wallet_input_data, wallet_taxable_event_set)
+        for gain_loss in wallet_gain_loss_set:
+            merged_gain_loss_set.add_entry(gain_loss)
+
+    return ComputedData(
+        input_data.asset,
+        unfiltered_taxable_event_set,
+        merged_gain_loss_set,
+        input_data,
+        configuration.from_date,
+        configuration.to_date,
+    )
