@@ -39,6 +39,7 @@ from rp2.configuration import (
 from rp2.input_data import InputData
 from rp2.localization import set_generation_language
 from rp2.logger import LOG_FILE, LOGGER
+from rp2.rp2_error import RP2RuntimeError
 from rp2.ods_parser import open_ods, parse_ods
 from rp2.tax_engine import compute_tax, compute_tax_per_wallet
 
@@ -155,7 +156,8 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
             LOGGER.debug("InputData object: %s", input_data)
 
             if args.per_wallet:
-                assert transfer_semantics is not None
+                if transfer_semantics is None:
+                    raise RP2RuntimeError("Internal error: transfer_semantics is None")
                 LOGGER.info("Lot tracking: per-wallet (IRS 2025+ compliance)")
                 computed_data: ComputedData = compute_tax_per_wallet(
                     configuration=configuration,
@@ -165,7 +167,7 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
                 )
             else:
                 LOGGER.info("Lot tracking: universal")
-                computed_data: ComputedData = compute_tax(configuration=configuration, accounting_engine=accounting_engine, input_data=input_data)
+                computed_data = compute_tax(configuration=configuration, accounting_engine=accounting_engine, input_data=input_data)
             LOGGER.debug("ComputedData object: %s", computed_data)
 
             asset_to_computed_data[asset] = computed_data

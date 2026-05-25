@@ -70,7 +70,7 @@ class GlobalAllocator:
         for account in account_order:
             if not isinstance(account, Account):
                 raise RP2TypeError(f"Parameter 'account_order' contains an element that is not of type Account: {account}")
-            if not account in self.__wallet_2_per_wallet_input_data:
+            if account not in self.__wallet_2_per_wallet_input_data:
                 raise RP2ValueError(f"Account order list has extra account {account} that is not referenced in the transaction set.")
         self.__account_order = account_order
         if len(self.__wallet_2_per_wallet_input_data) > len(self.__account_order):
