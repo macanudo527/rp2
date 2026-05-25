@@ -565,6 +565,173 @@ class TestGainLoss(unittest.TestCase):
         self.assertEqual(gl.fiat_gain, RP2Decimal("50"))
         self.assertTrue(gl.is_long_term_capital_gains(), "517-day holding (from 2020-01-01 to 2021-06-01) should be long-term")
 
+    def test_purchase_fee_increases_cost_basis(self) -> None:
+        """
+        The fee paid to acquire digital assets is added to the cost basis.
+        When the asset is later sold, the higher basis (purchase price + fee) reduces
+        the taxable gain compared to an identical purchase with no fee.
+
+        IRS rules:
+          IRS Virtual Currency FAQ Q8 (basis = amount paid including fees and commissions):
+            https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-virtual-currency-transactions#q8
+          IRS Digital Assets FAQ Q56 (basis = price paid + transaction service costs):
+            https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-digital-asset-transactions#q56
+        """
+        buy_no_fee = InTransaction(
+            self._configuration,
+            "2020-01-01T00:00:00Z",
+            "B1",
+            "Coinbase Pro",
+            "Bob",
+            "BUY",
+            RP2Decimal("10000"),
+            RP2Decimal("1.0"),
+            fiat_fee=RP2Decimal("0"),
+            fiat_in_no_fee=RP2Decimal("10000"),
+            fiat_in_with_fee=RP2Decimal("10000"),
+            row=100,
+        )
+        buy_with_fee = InTransaction(
+            self._configuration,
+            "2020-01-01T00:00:00Z",
+            "B1",
+            "Coinbase Pro",
+            "Bob",
+            "BUY",
+            RP2Decimal("10000"),
+            RP2Decimal("1.0"),
+            fiat_fee=RP2Decimal("100"),
+            fiat_in_no_fee=RP2Decimal("10000"),
+            fiat_in_with_fee=RP2Decimal("10100"),
+            row=101,
+        )
+        sell = OutTransaction(
+            self._configuration,
+            "2021-06-01T00:00:00Z",
+            "B1",
+            "Coinbase Pro",
+            "Bob",
+            "SELL",
+            RP2Decimal("12000"),
+            RP2Decimal("1.0"),
+            RP2Decimal("0"),
+            row=102,
+        )
+        gl_no_fee = GainLoss(self._configuration, RP2Decimal("1.0"), sell, buy_no_fee)
+        gl_with_fee = GainLoss(self._configuration, RP2Decimal("1.0"), sell, buy_with_fee)
+
+        # No fee: proceeds = $12,000; basis = $10,000; gain = $2,000
+        self.assertEqual(gl_no_fee.fiat_cost_basis, RP2Decimal("10000"))
+        self.assertEqual(gl_no_fee.fiat_gain, RP2Decimal("2000"))
+
+        # With $100 fee: proceeds = $12,000; basis = $10,100; gain = $1,900
+        self.assertEqual(gl_with_fee.fiat_cost_basis, RP2Decimal("10100"))
+        self.assertEqual(gl_with_fee.fiat_gain, RP2Decimal("1900"))
+
+    def test_earned_crypto_cost_basis_for_subsequent_sale(self) -> None:
+        """
+        When you earn crypto (staking, mining, wages, etc.), the FMV at the time of
+        receipt is both ordinary income AND the cost basis of that crypto going forward.
+        A subsequent sale uses that FMV as the adjusted basis — not zero.
+
+        IRS rules:
+          IRS Virtual Currency FAQ Q13 (basis of crypto received for services = FMV when received):
+            https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-virtual-currency-transactions#q13
+          IRS Digital Assets FAQ Q59 (same rule for 2025+ transactions):
+            https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-digital-asset-transactions#q59
+          Rev. Rul. 2023-14 (staking rewards are income at FMV; that FMV becomes cost basis):
+            https://www.irs.gov/pub/irs-drop/rr-23-14.pdf
+        """
+        # 0.1 BTC received as staking at $11,000/BTC → FMV = $1,100 (income recognised + cost basis established)
+        staking_reward = InTransaction(
+            self._configuration,
+            "2020-06-01T00:00:00Z",
+            "B1",
+            "BlockFi",
+            "Bob",
+            "STAKING",
+            RP2Decimal("11000"),
+            RP2Decimal("0.1"),
+            fiat_fee=RP2Decimal("0"),
+            row=110,
+        )
+        # Later sell 0.1 BTC at $15,000/BTC → proceeds = $1,500
+        sell = OutTransaction(
+            self._configuration,
+            "2022-06-15T00:00:00Z",
+            "B1",
+            "Coinbase Pro",
+            "Bob",
+            "SELL",
+            RP2Decimal("15000"),
+            RP2Decimal("0.1"),
+            RP2Decimal("0"),
+            row=111,
+        )
+        gl = GainLoss(self._configuration, RP2Decimal("0.1"), sell, staking_reward)
+
+        # Cost basis = FMV at time of staking receipt = 0.1 × $11,000 = $1,100 (not $0)
+        # Proceeds = 0.1 × $15,000 = $1,500
+        # Gain = $1,500 − $1,100 = $400
+        self.assertEqual(gl.fiat_cost_basis, RP2Decimal("1100"))
+        self.assertEqual(gl.taxable_event_fiat_amount_with_fee_fraction, RP2Decimal("1500"))
+        self.assertEqual(gl.fiat_gain, RP2Decimal("400"))
+        self.assertTrue(gl.is_long_term_capital_gains(), "Holding from 2020-06-01 to 2022-06-15 (>730 days) should be long-term")
+
+    def test_crypto_to_crypto_exchange_gain_loss(self) -> None:
+        """
+        Exchanging one digital asset for another (materially different) asset is a taxable
+        disposal of the asset given up. Gain or loss = FMV of the asset disposed at the
+        time of exchange minus the adjusted basis of that asset.
+
+        The holding period of the RECEIVED asset resets to the exchange date (see also
+        test_holding_period_resets_after_exchange).
+
+        IRS rules:
+          IRS Virtual Currency FAQ Q16-Q17 (exchange of crypto for other property = capital gain/loss):
+            https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-virtual-currency-transactions#q16
+          IRS Digital Assets FAQ Q64-Q66 (amount realized = FMV of asset received):
+            https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-digital-asset-transactions#q64
+          IRS Notice 2014-21 (crypto is property; general property disposal rules apply):
+            https://www.irs.gov/pub/irs-drop/n-14-21.pdf
+        """
+        # Buy 1.0 B1 (e.g. ETH) at $2,000 → cost basis = $2,000
+        buy = InTransaction(
+            self._configuration,
+            "2020-01-01T00:00:00Z",
+            "B1",
+            "Coinbase Pro",
+            "Bob",
+            "BUY",
+            RP2Decimal("2000"),
+            RP2Decimal("1.0"),
+            fiat_fee=RP2Decimal("0"),
+            row=120,
+        )
+        # Exchange 1.0 B1 for another asset when B1 spot = $3,000 — modelled as a SELL of B1
+        exchange_out = OutTransaction(
+            self._configuration,
+            "2022-01-01T00:00:00Z",
+            "B1",
+            "Coinbase Pro",
+            "Bob",
+            "SELL",
+            RP2Decimal("3000"),
+            RP2Decimal("1.0"),
+            RP2Decimal("0"),
+            row=121,
+        )
+        gl = GainLoss(self._configuration, RP2Decimal("1.0"), exchange_out, buy)
+
+        # Amount realized = FMV of B1 at exchange = $3,000
+        # Adjusted basis = cost of B1 = $2,000
+        # Gain = $3,000 − $2,000 = $1,000
+        self.assertEqual(gl.taxable_event_fiat_amount_with_fee_fraction, RP2Decimal("3000"))
+        self.assertEqual(gl.fiat_cost_basis, RP2Decimal("2000"))
+        self.assertEqual(gl.fiat_gain, RP2Decimal("1000"))
+        # Jan 1 2020 → Jan 1 2022 = 731 days (2020 is a leap year) → long-term
+        self.assertTrue(gl.is_long_term_capital_gains(), "731-day holding should be long-term")
+
     def test_bad_gain_loss(self) -> None:
         with self.assertRaisesRegex(RP2TypeError, "Parameter 'configuration' is not of type Configuration: .*"):
             # Bad configuration
