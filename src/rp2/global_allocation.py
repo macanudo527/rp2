@@ -133,7 +133,7 @@ class GlobalAllocator:
     def __process_wallet(self, accounting_engine: AccountingEngine, account: Account) -> List[IntraTransaction]:
         result: List[IntraTransaction] = []
         try:
-            timestamp_string = f"{self.__year}-01-01 00:00:00 +0000"
+            timestamp_string = f"{self.__year}-01-01T00:00:00+00:00"
             timestamp = datetime.fromisoformat(timestamp_string)
             balance_left_to_process: RP2Decimal = self.__account_to_available_balance[account]
             if balance_left_to_process == ZERO:
