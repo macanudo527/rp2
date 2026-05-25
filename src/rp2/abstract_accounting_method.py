@@ -137,7 +137,9 @@ class AbstractAcquiredLotCandidates:
         self.set_partial_amount(acquired_lot, ZERO)
 
     # Reset partial amounts to their original values and from index to zero.
-    def reset_partial_amounts(self, accounting_method: "AbstractAccountingMethod", original_partial_amounts: Dict[InTransaction, RP2Decimal]) -> None:  # pylint: disable=unused-argument
+    def reset_partial_amounts(  # pylint: disable=unused-argument
+        self, accounting_method: "AbstractAccountingMethod", original_partial_amounts: Dict[InTransaction, RP2Decimal]
+    ) -> None:
         for current_transaction, original_partial_amount in original_partial_amounts.items():
             self.set_partial_amount(current_transaction, original_partial_amount)
         self.set_from_index(0)

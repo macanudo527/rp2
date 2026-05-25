@@ -356,10 +356,7 @@ def _setup_argument_parser(country: AbstractCountry) -> ArgumentParser:
         action="store_true",
         dest="per_wallet",
         default=False,
-        help=(
-            "use per-wallet lot tracking (required for transactions on or after Jan 1, 2025 "
-            "under IRS digital asset regulations)"
-        ),
+        help=("use per-wallet lot tracking (required for transactions on or after Jan 1, 2025 " "under IRS digital asset regulations)"),
     )
     parser.add_argument(
         "-t",

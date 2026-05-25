@@ -52,9 +52,7 @@ class AbstractGlobalAllocation(AbstractTestTransactionProcessing):
 
         # Prepare test input
         wallet_to_per_wallet_input_data = self._create_per_wallet_input_data_from_transaction_descriptors(
-            configuration,
-            test.input_per_wallet_transactions,
-            test.input_actual_amounts
+            configuration, test.input_per_wallet_transactions, test.input_actual_amounts
         )
 
         # If the test expects an error, run global allocation and check for error.
@@ -73,8 +71,9 @@ class AbstractGlobalAllocation(AbstractTestTransactionProcessing):
         # Diff got and want results.
         got: List[str] = []
         want: List[str] = []
-        want_intra_transactions: List[IntraTransaction] = [self._create_intra_transaction(configuration, descriptor)
-                                                           for descriptor in test.want_intra_transactions]
+        want_intra_transactions: List[IntraTransaction] = [
+            self._create_intra_transaction(configuration, descriptor) for descriptor in test.want_intra_transactions
+        ]
         for intra_transaction in got_intra_transactions:
             got.extend(str(intra_transaction).splitlines())
         for intra_transaction in want_intra_transactions:

@@ -369,11 +369,11 @@ class TestGainLoss(unittest.TestCase):
         """
         earn_type_tests: List[Tuple[str, RP2Decimal, RP2Decimal, RP2Decimal]] = [
             ("HARDFORK", RP2Decimal("8000"), RP2Decimal("0.5"), RP2Decimal("4000")),
-            ("AIRDROP",  RP2Decimal("8000"), RP2Decimal("0.5"), RP2Decimal("4000")),
-            ("MINING",   RP2Decimal("8000"), RP2Decimal("0.5"), RP2Decimal("4000")),
-            ("STAKING",  RP2Decimal("8000"), RP2Decimal("0.5"), RP2Decimal("4000")),
-            ("WAGES",    RP2Decimal("8000"), RP2Decimal("0.5"), RP2Decimal("4000")),
-            ("INCOME",   RP2Decimal("8000"), RP2Decimal("0.5"), RP2Decimal("4000")),
+            ("AIRDROP", RP2Decimal("8000"), RP2Decimal("0.5"), RP2Decimal("4000")),
+            ("MINING", RP2Decimal("8000"), RP2Decimal("0.5"), RP2Decimal("4000")),
+            ("STAKING", RP2Decimal("8000"), RP2Decimal("0.5"), RP2Decimal("4000")),
+            ("WAGES", RP2Decimal("8000"), RP2Decimal("0.5"), RP2Decimal("4000")),
+            ("INCOME", RP2Decimal("8000"), RP2Decimal("0.5"), RP2Decimal("4000")),
         ]
         for i, (ttype, spot_price, crypto_in, expected_fiat_gain) in enumerate(earn_type_tests):
             with self.subTest(transaction_type=ttype):
@@ -552,8 +552,8 @@ class TestGainLoss(unittest.TestCase):
             "Bob",
             "FEE",
             RP2Decimal("15000"),
-            RP2Decimal("0"),    # crypto_out_no_fee must be 0 for FEE type
-            RP2Decimal("0.01"), # crypto_fee is what was actually disposed
+            RP2Decimal("0"),  # crypto_out_no_fee must be 0 for FEE type
+            RP2Decimal("0.01"),  # crypto_fee is what was actually disposed
             row=91,
         )
         # fiat_taxable_amount for FEE = fiat_fee = 0.01 * 15000 = 150

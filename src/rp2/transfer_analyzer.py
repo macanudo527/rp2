@@ -72,7 +72,7 @@ class TransferAnalyzer:
         transfer_semantics: AbstractAccountingMethod,
         universal_input_data: InputData,
         skip_transfer_pointers: bool = False,
-        use_local_artificial_ids: bool = False
+        use_local_artificial_ids: bool = False,
     ):
         self.__configuration = Configuration.type_check("configuration", configuration)
         if not isinstance(transfer_semantics, AbstractAccountingMethod):
