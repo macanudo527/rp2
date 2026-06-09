@@ -295,7 +295,9 @@ Use an in-transaction (if receiving crypto) or out-transaction (if giving crypto
 >
 > RP2 has no built-in model for this: there is no way to tag an in-transaction as "received as gift" so that the correct dual-basis rule applies automatically. **Workaround:** Record the in-transaction with the donor's original cost basis as the `spot_price` (converted to per-unit). Keep a note of the FMV at the gift date. When you later sell, manually determine which basis rule applies and adjust if necessary before filing — or consult a tax professional.
 >
-> **Reference:** IRC §1015 (transferred basis for gifts): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1015&edition=prelim
+> **References:**
+> * IRC §1015 (transferred basis for gifts): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1015&edition=prelim
+> * 26 CFR §1.1015-1 (IRS split-basis rule with worked example): https://www.law.cornell.edu/cfr/text/26/1.1015-1
 
 ### How to Handle Inherited Crypto?
 
