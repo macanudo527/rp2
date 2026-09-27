@@ -90,7 +90,7 @@ RP2 support for Spain includes the following features:
 
 ### USA
 RP2 support for the US includes the following features:
-* Accounting methods (note that these methods use [universal application](https://www.forbes.com/sites/shehanchandrasekera/2020/09/17/what-crypto-taxpayers-need-to-know-about-fifo-lifo-hifo-specific-id/), not per-wallet application):
+* Accounting methods (these methods use [universal application](https://www.forbes.com/sites/shehanchandrasekera/2020/09/17/what-crypto-taxpayers-need-to-know-about-fifo-lifo-hifo-specific-id/) until 2024; from 2025 per-wallet application is required and is available experimentally via `-w`: see the [FAQ](user_faq.md#how-do-i-use-per-wallet-application)):
   * [FIFO](https://en.wikipedia.org/wiki/FIFO_and_LIFO_accounting),
   * [LIFO](https://en.wikipedia.org/wiki/FIFO_and_LIFO_accounting),
   * [HIFO](https://en.wikipedia.org/wiki/FIFO_and_LIFO_accounting),

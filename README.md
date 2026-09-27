@@ -17,7 +17,7 @@
 # RP2 v1.7.2
 Privacy-focused, free, powerful crypto tax calculator
 
-**IMPORTANT NOTICE FOR USA TAXPAYERS**: Starting in 2025, the USA has transitioned from [Universal Application to Per-Wallet Application](https://github.com/eprbell/rp2/issues/135#issuecomment-2454959334). Support for Per-Wallet Application in RP2 is still under development — see [issue #135](https://github.com/eprbell/rp2/issues/135). Do not use RP2 for 2025 (and later) USA tax reporting until this issue is fully resolved.
+**IMPORTANT NOTICE FOR USA TAXPAYERS**: Starting in 2025, the USA has transitioned from [Universal Application to Per-Wallet Application](https://github.com/eprbell/rp2/issues/135#issuecomment-2454959334). Support for Per-Wallet Application in RP2 is still under development — see [issue #135](https://github.com/eprbell/rp2/issues/135). Do not use RP2 for 2025 (and later) USA tax reporting until this issue is fully resolved. An experimental implementation can be tried with the `-w` option: see the [FAQ](docs/user_faq.md#how-do-i-use-per-wallet-application).
 
 **IMPORTANT NOTICE FOR TAXPAYERS WORLDWIDE**: Support for Per-Wallet Application in RP2 is still in development - see [issue 135 for details](https://github.com/eprbell/rp2/issues/135#issuecomment-2454959334). If your country mandates Per-Wallet Application, do not use RP2 for tax reporting until that issue is resolved. If your country permits Universal Application (already supported by RP2), you may safely use RP2.
 

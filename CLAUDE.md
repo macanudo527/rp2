@@ -75,37 +75,29 @@ ComputedData (asset → GainLossSet)
 plugin/report/ generators → ODS output files + logs
 ```
 
-#### Per-Wallet (new path, in development)
+#### Per-Wallet (`-w`, countries with a per-wallet start year, e.g. US from 2025)
 
 ```
-Config file (INI) + Input ODS spreadsheet
+Config file (INI, with [per_wallet] section) + Input ODS spreadsheet
   ↓
 ods_parser.py → InputData (universal: all transactions by asset)
   ↓
-TransferAnalyzer(universal_input_data, transfer_semantics).analyze()
-  - iterates all transactions chronologically across all wallets
-  - InTransactions: adds lots to the source wallet's PerWalletTransactions
-  - OutTransactions: marks lots as spent in the appropriate wallet
-  - IntraTransactions: creates artificial InTransactions at the destination
-    wallet, linking back via from_lot / originates_from / cost_basis_timestamp;
-    handles self-transfers and cycle detection
-  → Dict[Account, InputData]  (one InputData per wallet)
+tax_engine.compute_tax_per_wallet():
+  - switch instant = Jan 1 of country.get_per_wallet_application_start_year(), in [per_wallet] timezone;
+    transactions whose own-timestamp year disagrees with the switch → RP2ValueError (never guessed)
+  - before the switch: universal application, identical to compute_tax()
+  - at the switch: UnusedBasisAllocator assigns the lots still unused under universal application to the
+    wallets holding funds (Rev. Proc. 2024-28 global allocation; explicit config if > 1 funded wallet),
+    as artificial InTransactions (from_lot = original lot, same per-unit basis and acquisition date)
+  - after the switch: TransferAnalyzer(...).analyze_and_pair() processes transactions chronologically
+    (same timestamp: In, Intra, Out, then row), per wallet, with the accounting method of each year:
+      InTransaction → lot added to its wallet (earn types → income GainLoss)
+      OutTransaction → lots taken from its wallet only → GainLoss per lot piece
+      IntraTransaction → fee paid first (disposal GainLoss or basis carryover, per [per_wallet]
+        transfer_fee_treatment), received units become artificial InTransactions in the destination
+        (cycles A→B→A return units to the original lot)
   ↓
-[Optional] GlobalAllocator(wallet_2_input_data, allocation_method, year, account_order).allocate()
-  - builds a single global acquired_lots pool across all wallets
-  - for each account in account_order, uses AccountingEngine to pick which lots
-    should fill that account's balance using the chosen allocation method
-  - generates artificial IntraTransactions representing the reallocation
-  → List[IntraTransaction]
-  (feed back into TransferAnalyzer with the new intra transactions to get
-   final per-wallet InputData)
-  ↓
-tax_engine.compute_tax(): for each asset/wallet:
-  - same as universal path, but InputData is per-wallet
-  - LTCG uses cost_basis_timestamp (original acquisition date, preserved
-    through the transfer chain) rather than the transfer timestamp
-  ↓
-ComputedData (asset → GainLossSet)
+ComputedData (asset → GainLossSet: universal pre-switch + per-wallet post-switch)
   ↓
 plugin/report/ generators → ODS output files + logs
 ```
@@ -132,10 +124,14 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 | `AccountingEngine` | `accounting_engine.py` | Pairs lots using accounting method |
 | `TaxEngine` | `tax_engine.py` | Orchestrates per-asset computation |
 | `RP2Decimal` | `rp2_decimal.py` | High-precision Decimal subclass; use for all math |
-| `Account` | `in_transaction.py` | Frozen `(exchange, holder)` wallet identity; key in per-wallet dicts |
-| `PerWalletTransactions` | `transfer_analyzer.py` | Accumulates in/out/intra sets plus partial-amount map for one wallet during transfer analysis |
-| `TransferAnalyzer` | `transfer_analyzer.py` | Decomposes universal `InputData` into per-wallet `InputData` objects; creates artificial `InTransaction`s for transfer destinations |
-| `GlobalAllocator` | `global_allocation.py` | Generates artificial `IntraTransaction`s that reallocate lots across wallets using a chosen accounting method |
+| `Account` | `account.py` | Frozen `(exchange, holder)` wallet identity; key in per-wallet dicts |
+| `PerWalletTransactions` | `transfer_analyzer.py` | Lots (with per-method heaps), actual amounts and out/intra sets of one wallet during transfer analysis |
+| `TransferAnalyzer` | `transfer_analyzer.py` | Per-wallet engine: decomposes `InputData` into per-wallet `InputData` and pairs taxable events with lots of their wallet (`analyze_and_pair()`) |
+| `AcquisitionDateFifo` | `acquisition_date_fifo.py` | Per-wallet FIFO: orders lots by original acquisition date (`cost_basis_timestamp`), not arrival date |
+| `UnusedBasisAllocator` | `unused_basis_allocator.py` | Rev. Proc. 2024-28 global allocation of unused lots to wallets at the per-wallet switch |
+| `PerWalletConfiguration` | `per_wallet_configuration.py` | `[per_wallet]` config section: timezone, transfer fee treatment, unused basis allocation rule |
+| `TransferFeeTreatment` | `transfer_fee_treatment.py` | `DISPOSAL` or `BASIS_CARRYOVER` for crypto fees on transfers between own wallets (unsettled US law: user must choose) |
+| `GlobalAllocator` | `global_allocation.py` | Earlier, unwired prototype of global allocation (superseded by `UnusedBasisAllocator`) |
 
 ### Design Conventions
 
@@ -146,7 +142,7 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 
 ### Testing
 
-- `tests/golden/` holds expected ODS outputs for regression tests.
+- `input/golden/` holds expected ODS outputs for regression tests.
 - `tests/rp2_test_output.py` provides helpers for comparing actual vs. expected output.
 - Output-diff tests (`test_ods_output_diff_*.py`) are per-country and catch report formatting regressions.
 - `tests/test_gain_loss.py` contains unit tests that verify IRS-rule-level correctness. Each test cites the governing IRS authority:
@@ -158,6 +154,10 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
   - `test_good_non_interest_gain_loss` — intra-transaction crypto fee is a taxable disposal (IRS FAQ Q81/Q97, Notice 2014-21)
 
 #### Per-Wallet and Global Allocation Tests (new)
+
+- `tests/test_per_wallet_tax_engine.py` — end-to-end, hand-computed examples for `compute_tax_per_wallet` (edge cases: fees, #149, holding period, allocation, timezone boundary, same-timestamp order, cycles, method change, dust).
+- `tests/test_per_wallet_properties.py` — hypothesis property tests: wallet lots = wallet balance after each step, basis/lot conservation, single wallet per-wallet == universal, JP universal results unaffected.
+- `tests/test_ods_output_diff_per_wallet.py` — `-w` output for pre-2025 datasets is identical to universal output; `rp2_jp -w` is rejected.
 
 - `tests/test_transfer_analysis_semantics_independent.py` — transfer analysis tests whose expected results do not depend on which accounting method is used for transfer semantics (e.g., single-lot transfers).
 - `tests/test_transfer_analysis_semantics_dependent.py` — transfer analysis tests whose results differ based on FIFO vs. LIFO vs. HIFO transfer semantics.
@@ -193,16 +193,19 @@ RP2 has no dedicated slash transaction type. Involuntary stake losses (slashing)
 When two transactions share the same timestamp, their relative order is determined by their row number in the input spreadsheet. For LIFO and HIFO methods, swapping same-timestamp rows changes which lot is selected, potentially altering the tax outcome with no warning.
 
 ### Universal Lot Pool (default path)
-All accounting methods (FIFO, LIFO, HIFO, LOFO) operate on a single global pool of lots per asset, regardless of which exchange or wallet the lots are held in. Per-wallet lot tracking is available via `TransferAnalyzer` but is not yet exposed in the CLI. Balance enforcement IS per-account (via `BalanceSet`), but lot selection is global in the universal path.
+All accounting methods (FIFO, LIFO, HIFO, LOFO) operate on a single global pool of lots per asset, regardless of which exchange or wallet the lots are held in. Per-wallet application is enabled with `-w` (countries whose `get_per_wallet_application_start_year()` is not None, currently only the US) and needs a `[per_wallet]` config section. Balance enforcement IS per-account (via `BalanceSet`), but lot selection is global in the universal path.
 
 ### Artificial InTransactions (per-wallet path only)
 `TransferAnalyzer` creates artificial `InTransaction` objects to model the "to" side of each `IntraTransaction`. These artificial transactions exist only in per-wallet `InputData` objects — they are never present in the original universal `InputData` returned by `ods_parser.py`. Identifying fields: `from_lot is not None`. The fields `from_lot`, `to_lots`, and `originates_from` are only meaningful on artificial InTransactions.
 
 ### cost_basis_timestamp and LTCG (per-wallet path)
-`InTransaction.cost_basis_timestamp` walks the `from_lot` chain back to the original acquisition to find the true purchase date. `GainLoss.is_long_term_capital_gains()` uses `cost_basis_timestamp` (not `timestamp`) so that the holding period survives wallet-to-wallet transfers. In the universal path all InTransactions are real (no `from_lot`), so `cost_basis_timestamp` falls back to `timestamp` and behavior is unchanged.
+`InTransaction.cost_basis_timestamp` is the original acquisition date: artificial InTransactions are created with the timestamp of their `original_lot` (the root of the `from_lot` chain). `GainLoss.is_long_term_capital_gains()` uses `cost_basis_timestamp` (not `timestamp`) so that the holding period survives wallet-to-wallet transfers. In the universal path all InTransactions are real (no `from_lot`), so `cost_basis_timestamp` falls back to `timestamp` and behavior is unchanged.
 
-### TransferAnalyzer Requires InTransactions Before OutTransactions Per Account
-`TransferAnalyzer.analyze()` raises `RP2ValueError` if an `OutTransaction` or `IntraTransaction` references an account that has not yet been seen in an `InTransaction`. The universal `InputData` must include all acquisition events; the analyzer processes everything chronologically in a single pass.
+### TransferAnalyzer Enforces Per-Wallet Balances
+`TransferAnalyzer` raises `RP2ValueError` ("Insufficient balance on ...") if an `OutTransaction` or `IntraTransaction` needs more funds than its wallet holds at that moment, even if other wallets have funds. The analyzer processes everything chronologically in a single pass.
 
-### GlobalAllocator Is Incomplete
-`global_allocation.py` contains several `TODO` comments (fee splitting, spot price for artificial intra transactions). The core allocation loop works for the happy path, but edge cases (e.g., very small dust amounts, accounts with zero balance) may not be fully handled. The CLI does not yet expose global allocation.
+### GlobalAllocator Is Superseded
+`global_allocation.py` is an earlier prototype that is not wired into the CLI (TODOs: fee splitting, spot price). The per-wallet pipeline uses `UnusedBasisAllocator`, which allocates the lots left unused by universal application (the Rev. Proc. 2024-28 definition of unused basis) rather than lots traced per wallet.
+
+### Japan and Other Universal-Only Countries
+`get_per_wallet_application_start_year()` returns None by default: `-w` is rejected and `compute_tax_per_wallet()` raises. Note that the JP plugin only offers FIFO, although Japanese law prescribes 総平均法 (default) or 移動平均法 for individuals (docs/supported_countries.md claims total average): this is a known, pre-existing gap.

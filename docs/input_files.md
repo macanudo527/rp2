@@ -111,6 +111,10 @@ The config file is structured as described below. Note that:
 * the `holders` field of the `general` section typically contains only one name, unless multiple people are filing taxes jointly (in which case a comma-separated list is used);
 * the `generators` filed of the `general` section is optional and contains a comma-separated list of names of output generator plugins to use at generation time. If the section is not specified the default plugin set is used;
 * the `accounting_methods` section is optional and contains information on which accounting methods to use on any given year (see an [example](../config/test_data_multi_method.ini));
+* the `per_wallet` section is optional and is used only with the `-w` command line option (per-wallet application, see the [FAQ](user_faq.md#how-do-i-use-per-wallet-application)). Its fields are:
+  * `timezone` (mandatory): [IANA time zone](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) (e.g. `America/New_York`) in which January 1st of the first per-wallet year starts (2025 in the US). RP2 stops with an error if a transaction's own timestamp puts it in a different tax year than this timezone does (e.g. `2025-01-01T03:00:00+09:00` with `America/New_York`): fix the timestamp or the timezone;
+  * `transfer_fee_treatment`: how a crypto fee paid on a transfer between your own wallets is treated: `disposal` (the fee units are sold: gain/loss is computed on them, like universal application does) or `basis_carryover` (not a taxable event: the cost basis of the fee units is added to the received units). US law doesn't settle this, so RP2 doesn't pick a default: this field is mandatory if any transfer after the switch has a crypto fee;
+  * `unused_basis_allocation_method` and `unused_basis_allocation_wallet_order`: the Rev. Proc. 2024-28 "global allocation" rule used to assign the lots that are still unused on January 1st of the first per-wallet year to the wallets that hold funds at that moment. The lots are sorted with the given accounting method (e.g. `fifo`) and the wallets, written as `<exchange>/<holder>` (e.g. `Coinbase/Bob, Kraken/Bob`), are filled in the given order, each up to its balance. These fields are mandatory if more than one wallet holds funds at the switch;
 * *`<...>`* must be substituted with user-provided values (e.g. *`<column_number>`* must be substituted with 0 for column A in the input spreadsheet, 1 for B, etc).
 <pre>
 [in_header]
@@ -163,4 +167,10 @@ generators&#x1F537; = <em>&lt;"generator_1_in_quotes"&gt;</em>, ...&#x1F537; <em
 <em>&lt;"from_year_1"&gt;</em> = <em>&lt;"accounting_method_1"&gt;</em>
 ...&#x1F537;
 <em>&lt;"from_year_n"&gt;</em> = <em>&lt;"accounting_method_n"&gt;</em>&#x1F537;
+
+[per_wallet]&#x1F537;
+timezone = <em>&lt;IANA_time_zone&gt;</em>
+transfer_fee_treatment&#x1F537; = <em>&lt;disposal_or_basis_carryover&gt;</em>
+unused_basis_allocation_method&#x1F537; = <em>&lt;accounting_method&gt;</em>
+unused_basis_allocation_wallet_order&#x1F537; = <em>&lt;exchange_1/holder_1&gt;</em>, ...&#x1F537; <em>&lt;exchange_n/holder_n&gt;</em>&#x1F537;
 </pre>

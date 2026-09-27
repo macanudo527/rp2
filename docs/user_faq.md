@@ -23,6 +23,7 @@
   * [What Tokens Does RP2 Support?](#what-tokens-does-rp2-support)
   * [What Accounting Methods Are Supported?](#what-accounting-methods-are-supported)
   * [Do Accounting Methods Use Universal or Per-Wallet Application](#do-accounting-methods-use-universal-or-per-wallet-application)
+  * [How Do I Use Per-Wallet Application?](#how-do-i-use-per-wallet-application)
   * [Can I Change Accounting Method?](#can-i-change-accounting-method)
   * [What Countries Are Supported?](#what-countries-are-supported)
   * [How to Switch from Another Tax Software to RP2?](#how-to-switch-from-another-tax-software-to-rp2)
@@ -97,7 +98,26 @@ The user adds the tokens to the `assets` field of the [config file](input_files.
 Accounting methods vary country by country, as described in the [supported countries](supported_countries.md) document.
 
 ### Do Accounting Methods Use Universal or Per-Wallet Application?
-RP2 engine currently supports [universal application](https://www.forbes.com/sites/shehanchandrasekera/2020/09/17/what-crypto-taxpayers-need-to-know-about-fifo-lifo-hifo-specific-id/) application, however per-wallet support is [being worked on](https://github.com/eprbell/rp2/issues/135).
+By default RP2 uses [universal application](https://www.forbes.com/sites/shehanchandrasekera/2020/09/17/what-crypto-taxpayers-need-to-know-about-fifo-lifo-hifo-specific-id/): all lots of a coin form one pool, regardless of the wallet or exchange they are in. Per-wallet application (each wallet or exchange account has its own pool) is available experimentally for countries that require it, via the `-w` command line option: see [How Do I Use Per-Wallet Application?](#how-do-i-use-per-wallet-application). Development is tracked in [issue #135](https://github.com/eprbell/rp2/issues/135).
+
+### How Do I Use Per-Wallet Application?
+In the US, from January 1st, 2025 cost basis must be identified wallet by wallet (Treas. Reg. §1.1012-1(j)): a sale on Kraken can only use lots that are on Kraken. Tax years before 2025 keep using universal application. To enable it:
+1. add a `per_wallet` section to the [config file](input_files.md#the-config-file) (at least the `timezone` field);
+2. run RP2 with `-w` (e.g. `rp2_us -w -o output config/my_config.ini input/my_input.ods`).
+
+Per-wallet application is supported only by countries that require it (currently the US): for all other countries (e.g. Japan, where cost basis is computed across all wallets) `-w` is rejected. If a US run contains 2025 transactions and `-w` is not used, RP2 prints a warning.
+
+What happens with `-w`:
+* **Before 2025**: exactly the same computation (and output) as without `-w`.
+* **On January 1st, 2025 (the switch)**: the lots that are still unsold under universal application are assigned to the wallets that hold funds at that moment, as allowed by the [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) safe harbor. RP2 implements the "global allocation" method: you choose an accounting method to sort the unused lots and the order in which wallets are filled (`unused_basis_allocation_method` and `unused_basis_allocation_wallet_order` in the `per_wallet` section). RP2 does not choose for you: if more than one wallet holds funds and the rule is missing, RP2 stops with an error. The Revenue Procedure requires the rule to be decided (and documented in your records) before January 1st, 2025: RP2 cannot verify this, so make sure the rule you configure is the one you chose then. The "specific unit allocation" method of Rev. Proc. 2024-28 is not supported yet.
+* **From 2025 on**: each wallet has its own lots. A sale or transfer that exceeds a wallet's balance is an error, even if other wallets have funds. Transfers between your wallets are not taxable: the transferred lots keep their cost basis (purchase fees included) and their original acquisition date, so the holding period continues and FIFO orders them by acquisition date (not by arrival date in the wallet). If a transfer has a crypto fee (sent > received), the fee is paid with the first units selected by the accounting method and is treated according to `transfer_fee_treatment` (`disposal` or `basis_carryover`): US law doesn't settle this, so RP2 requires you to choose. Transactions with the same timestamp are processed in this order: acquisitions, then transfers, then sales (then by row), so funds received at a given instant can be sold at the same instant.
+* The accounting method (`-m` or the `accounting_methods` section) applies to both sales and transfers in each year, so they are always consistent. Note that in the US, methods other than FIFO (HIFO, LIFO, LOFO) are a form of specific identification, which requires adequate identification of the units (e.g. a standing order): see [Notice 2025-7](https://www.irs.gov/pub/irs-drop/n-25-07.pdf), whose relief was extended through 2026 by [Notice 2026-20](https://www.irs.gov/pub/irs-drop/n-26-20.pdf).
+* The tax year of a transaction is the year of its timestamp, in the timestamp's own time zone. If the `timezone` of the `per_wallet` section puts a transaction on the other side of the switch (e.g. `2025-01-01T03:00:00+09:00` is still 2024 in New York), RP2 stops with an error rather than guessing.
+
+Current limitations (see [issue #135](https://github.com/eprbell/rp2/issues/135)):
+* reports don't yet show the wallet of each lot and disposal, nor distinguish covered from noncovered assets, which are needed to reconcile with Form 1099-DA and to fill Form 8949 boxes;
+* the specific unit allocation of Rev. Proc. 2024-28 is not supported;
+* transfers between different holders are treated as transfers between wallets (carryover basis), not as gifts.
 
 ### Can I Change Accounting Method?
 Yes, for countries that support more than one accounting method, you can select which one to use via the `-m` command line option, or you can use the `accounting_methods` section of the [config file](https://github.com/eprbell/rp2/blob/main/docs/input_files.md#the-config-file).
