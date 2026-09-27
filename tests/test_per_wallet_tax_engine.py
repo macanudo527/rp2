@@ -287,6 +287,61 @@ class TestPerWalletTaxEngine(unittest.TestCase):
                 ],
                 want=[_GainLoss("o1", "i1", "1", "100", "500", False)],
             ),
+            # The next three cases are worked examples from the Reddit threads linked in eprbell/rp2#135, with the answers given there by
+            # a CPA (JustinCPA). Kraken and BlockFi stand in for hardware wallets.
+            _Test(
+                description="eprbell's question (reddit.com/r/CryptoTax/comments/1gbvfic/comment/ltvfqy7): with FIFO the round trip sells the $11000 lot",
+                transactions=[
+                    _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "10000", "1"),
+                    _In("i2", "2025-02-01T00:00:00+00:00", "Coinbase", "Buy", "11000", "1"),
+                    _Intra("t1", "2025-03-01T00:00:00+00:00", "Coinbase", "Kraken", "12000", "1", "1"),
+                    _Intra("t2", "2025-04-01T00:00:00+00:00", "Coinbase", "BlockFi", "13000", "1", "1"),
+                    _Intra("t3", "2025-05-01T00:00:00+00:00", "BlockFi", "Coinbase", "14000", "1", "1"),
+                    _Out("o1", "2025-06-01T00:00:00+00:00", "Coinbase", "20000", "1"),
+                ],
+                want=[_GainLoss("o1", "i2", "1", "11000", "9000", False)],
+            ),
+            _Test(
+                description="eprbell's question with HIFO: transfers use the method of the year, so the $10000 lot comes back and is sold",
+                transactions=[
+                    _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "10000", "1"),
+                    _In("i2", "2025-02-01T00:00:00+00:00", "Coinbase", "Buy", "11000", "1"),
+                    _Intra("t1", "2025-03-01T00:00:00+00:00", "Coinbase", "Kraken", "12000", "1", "1"),
+                    _Intra("t2", "2025-04-01T00:00:00+00:00", "Coinbase", "BlockFi", "13000", "1", "1"),
+                    _Intra("t3", "2025-05-01T00:00:00+00:00", "BlockFi", "Coinbase", "14000", "1", "1"),
+                    _Out("o1", "2025-06-01T00:00:00+00:00", "Coinbase", "20000", "1"),
+                ],
+                years_2_methods={1970: AccountingMethodHIFO()},
+                want=[_GainLoss("o1", "i1", "1", "10000", "10000", False)],
+            ),
+            _Test(
+                description="gurtz135's question (reddit.com/r/CryptoTax/comments/1gbvfic/comment/m310q4a): units moved to Kraken keep their date",
+                transactions=[
+                    _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "10"),
+                    _In("i2", "2025-02-01T00:00:00+00:00", "Kraken", "Buy", "200", "5"),
+                    _Intra("t1", "2025-03-01T00:00:00+00:00", "Coinbase", "Kraken", "300", "4", "4"),
+                    _Out("o1", "2025-04-01T00:00:00+00:00", "Kraken", "400", "2"),
+                ],
+                # "They retain their original holding period. So the 2BTC sold would be from Coinbase."
+                want=[_GainLoss("o1", "i1", "2", "200", "600", False)],
+            ),
+            _Test(
+                description="Metal450's question (reddit.com/r/CryptoTax/comments/1hk31yd/comment/m4w1hll): sale order A1, B, A2 by acquisition date",
+                transactions=[
+                    _In("a1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "1"),
+                    _In("b1", "2025-02-01T00:00:00+00:00", "Kraken", "Buy", "200", "1"),
+                    _In("a2", "2025-03-01T00:00:00+00:00", "Coinbase", "Buy", "300", "1"),
+                    _Intra("t1", "2025-04-01T00:00:00+00:00", "Coinbase", "Kraken", "400", "2", "2"),
+                    _Out("o1", "2025-05-01T00:00:00+00:00", "Kraken", "500", "1"),
+                    _Out("o2", "2025-05-02T00:00:00+00:00", "Kraken", "500", "1"),
+                    _Out("o3", "2025-05-03T00:00:00+00:00", "Kraken", "500", "1"),
+                ],
+                want=[
+                    _GainLoss("o1", "a1", "1", "100", "400", False),
+                    _GainLoss("o2", "b1", "1", "200", "300", False),
+                    _GainLoss("o3", "a2", "1", "300", "200", False),
+                ],
+            ),
             _Test(
                 description="Transfer fee paid in the transferred asset, treated as a disposal",
                 transactions=[
@@ -399,6 +454,20 @@ class TestPerWalletTaxEngine(unittest.TestCase):
                 per_wallet_configuration=_allocation_config((_KRAKEN, _COINBASE)),
                 allocation_method=AccountingMethodHIFO(),
                 want=[_GainLoss("o1", "i2", "5", "1000", "500", True)],
+            ),
+            _Test(
+                # Rev. Proc. 2024-28 §3.04: "The acquisition date of a unit of unused basis is the acquisition date of the digital asset unit
+                # to which the unit of unused basis was originally attached." Allocation moves basis and date together: it can't attach the
+                # highest basis to the earliest date (as some allocation plans suggested in the threads linked in eprbell/rp2#135).
+                description="Unused basis allocation keeps each basis with its own acquisition date: HIFO gives Kraken i2, sold short term",
+                transactions=[
+                    _In("i1", "2024-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "10"),
+                    _In("i2", "2024-06-01T00:00:00+00:00", "Kraken", "Buy", "200", "10"),
+                    _Out("o1", "2025-02-01T00:00:00+00:00", "Kraken", "300", "5"),
+                ],
+                per_wallet_configuration=_allocation_config((_KRAKEN, _COINBASE)),
+                allocation_method=AccountingMethodHIFO(),
+                want=[_GainLoss("o1", "i2", "5", "1000", "500", False)],
             ),
             _Test(
                 description="Per-asset wallet order override: B1 fills Coinbase first even though the default order fills Kraken first",
