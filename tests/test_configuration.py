@@ -17,11 +17,12 @@ import unittest
 from configparser import ConfigParser
 from datetime import datetime
 from tempfile import NamedTemporaryFile
-from typing import Optional
+from typing import Dict, Optional
 
 from dateutil.tz import tzoffset, tzutc
 
 from rp2.abstract_country import AbstractCountry
+from rp2.account import Account
 from rp2.configuration import Configuration, Keyword
 from rp2.plugin.country.us import US
 from rp2.rp2_decimal import ZERO, RP2Decimal
@@ -51,6 +52,58 @@ class TestConfiguration(unittest.TestCase):
         os.remove(temporary_file.name)
 
         return result
+
+    @staticmethod
+    def _per_wallet_config(fields: Dict[str, str]) -> ConfigParser:
+        config = ConfigParser()
+        config.read("./config/test_data.ini")
+        config["per_wallet"] = {"timezone": "America/New_York", **fields}
+        return config
+
+    def test_per_wallet_section(self) -> None:
+        # Default rule plus per-asset overrides (Rev. Proc. 2024-28 applies the safe harbor per type of digital asset). Asset suffixes are
+        # case-insensitive because the configuration parser lowercases field names.
+        configuration = self._test_config(
+            self._per_wallet_config(
+                {
+                    "transfer_fee_treatment": "basis_carryover",
+                    "unused_basis_allocation_method": "fifo",
+                    "unused_basis_allocation_wallet_order": "Coinbase/Bob, Coinbase Pro/Bob",
+                    "unused_basis_allocation_wallet_order.b1": "Coinbase Pro/Bob, Coinbase/Bob",
+                    "unused_basis_allocation_method.B2": "hifo",
+                }
+            )
+        )
+        per_wallet_configuration = configuration.per_wallet_configuration
+        assert per_wallet_configuration is not None
+        self.assertEqual(per_wallet_configuration.timezone_name, "America/New_York")
+        self.assertEqual(per_wallet_configuration.get_unused_basis_allocation_method("B1"), "fifo")
+        self.assertEqual(per_wallet_configuration.get_unused_basis_allocation_wallet_order("B1"), (Account("Coinbase Pro", "Bob"), Account("Coinbase", "Bob")))
+        self.assertEqual(per_wallet_configuration.get_unused_basis_allocation_method("B2"), "hifo")
+        self.assertEqual(per_wallet_configuration.get_unused_basis_allocation_wallet_order("B2"), (Account("Coinbase", "Bob"), Account("Coinbase Pro", "Bob")))
+        self.assertEqual(per_wallet_configuration.get_unused_basis_allocation_method("B3"), "fifo")
+        self.assertEqual(per_wallet_configuration.unused_basis_allocation_method_names, {"fifo", "hifo"})
+
+        # A per-asset override can define a complete rule without a default.
+        configuration = self._test_config(
+            self._per_wallet_config({"unused_basis_allocation_method.B1": "lifo", "unused_basis_allocation_wallet_order.B1": "Kraken/Alice"})
+        )
+        assert configuration.per_wallet_configuration is not None
+        self.assertEqual(configuration.per_wallet_configuration.get_unused_basis_allocation_method("B1"), "lifo")
+        self.assertIsNone(configuration.per_wallet_configuration.get_unused_basis_allocation_method("B2"))
+
+        with self.assertRaisesRegex(RP2ValueError, "refers to an unknown asset 'b9'"):
+            self._test_config(self._per_wallet_config({"unused_basis_allocation_method.B9": "fifo"}))
+        with self.assertRaisesRegex(RP2ValueError, "invalid field 'timezone.b1'"):
+            self._test_config(self._per_wallet_config({"timezone.B1": "UTC"}))
+        with self.assertRaisesRegex(RP2ValueError, "the unused basis allocation of B1 has a method or a wallet order, but not both"):
+            self._test_config(self._per_wallet_config({"unused_basis_allocation_method.B1": "fifo"}))
+        with self.assertRaisesRegex(RP2ValueError, "invalid wallet 'Binance/Bob'"):
+            self._test_config(self._per_wallet_config({"unused_basis_allocation_method.B1": "fifo", "unused_basis_allocation_wallet_order.B1": "Binance/Bob"}))
+        config = self._per_wallet_config({})
+        del config["per_wallet"]["timezone"]
+        with self.assertRaisesRegex(RP2ValueError, "doesn't contain mandatory field 'timezone'"):
+            self._test_config(config)
 
     def test_config_file(self) -> None:
         config = ConfigParser()

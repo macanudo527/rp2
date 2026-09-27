@@ -198,6 +198,7 @@ def _create_unfiltered_gain_and_loss_set(
 # - the lots that are still unused under universal application are allocated to the wallets that hold funds (Rev. Proc. 2024-28 global
 #   allocation, see UnusedBasisAllocator);
 # - from then on TransferAnalyzer tracks lots per wallet and pairs every taxable event with lots of its own wallet.
+# allocation_method is the unused basis allocation method of this asset (see PerWalletConfiguration.get_unused_basis_allocation_method()).
 def compute_tax_per_wallet(
     configuration: Configuration,
     accounting_engine: AccountingEngine,
@@ -244,7 +245,7 @@ def compute_tax_per_wallet(
                 unused_lots,
                 _get_account_balances(universal_transactions, unused_lots),
                 allocation_method,
-                list(per_wallet_configuration.unused_basis_allocation_wallet_order),
+                list(per_wallet_configuration.get_unused_basis_allocation_wallet_order(input_data.asset)),
             ).allocate()
         transfer_fee_treatment = _get_transfer_fee_treatment(per_wallet_transactions, per_wallet_configuration)
         per_wallet_input_data = _create_input_data(configuration, input_data.asset, per_wallet_transactions + cast(List[AbstractTransaction], allocated_lots))

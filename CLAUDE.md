@@ -129,7 +129,7 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 | `TransferAnalyzer` | `transfer_analyzer.py` | Per-wallet engine: decomposes `InputData` into per-wallet `InputData` and pairs taxable events with lots of their wallet (`analyze_and_pair()`) |
 | `AcquisitionDateFifo` | `acquisition_date_fifo.py` | Per-wallet FIFO: orders lots by original acquisition date (`cost_basis_timestamp`), not arrival date |
 | `UnusedBasisAllocator` | `unused_basis_allocator.py` | Rev. Proc. 2024-28 global allocation of unused lots to wallets at the per-wallet switch |
-| `PerWalletConfiguration` | `per_wallet_configuration.py` | `[per_wallet]` config section: timezone, transfer fee treatment, unused basis allocation rule |
+| `PerWalletConfiguration` | `per_wallet_configuration.py` | `[per_wallet]` config section: timezone, transfer fee treatment, unused basis allocation rule (default plus per-asset overrides, `<field>.<asset>`) |
 | `TransferFeeTreatment` | `transfer_fee_treatment.py` | `DISPOSAL` or `BASIS_CARRYOVER` for crypto fees on transfers between own wallets (unsettled US law: user must choose) |
 | `GlobalAllocator` | `global_allocation.py` | Earlier, unwired prototype of global allocation (superseded by `UnusedBasisAllocator`) |
 

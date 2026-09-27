@@ -18,7 +18,7 @@ from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from dateutil.parser import parse
 from jsonschema import validate
@@ -79,6 +79,11 @@ class Keyword(Enum):
 _PER_WALLET_FIELDS: Set[str] = {
     Keyword.TIMEZONE.value,
     Keyword.TRANSFER_FEE_TREATMENT.value,
+    Keyword.UNUSED_BASIS_ALLOCATION_METHOD.value,
+    Keyword.UNUSED_BASIS_ALLOCATION_WALLET_ORDER.value,
+}
+# Per-wallet fields that can be overridden for a single asset, as <field>.<asset> (e.g. unused_basis_allocation_wallet_order.BTC).
+_PER_WALLET_PER_ASSET_FIELDS: Set[str] = {
     Keyword.UNUSED_BASIS_ALLOCATION_METHOD.value,
     Keyword.UNUSED_BASIS_ALLOCATION_WALLET_ORDER.value,
 }
@@ -316,27 +321,51 @@ class Configuration:  # pylint: disable=too-many-public-methods
         return result
 
     def _validate_per_wallet_section(self, section: SectionProxy, configuration_path: str) -> PerWalletConfiguration:
-        for field_name in section.keys():
-            if field_name not in _PER_WALLET_FIELDS:
+        asset_2_allocation_method: Dict[str, str] = {}
+        asset_2_wallet_order: Dict[str, Tuple[Account, ...]] = {}
+        for field_name, value in section.items():
+            if field_name in _PER_WALLET_FIELDS:
+                continue
+            base_field_name, _, asset_name = field_name.partition(".")
+            if base_field_name not in _PER_WALLET_PER_ASSET_FIELDS or not asset_name:
                 raise RP2ValueError(f"{configuration_path}: invalid field '{field_name}' in section '{section.name}'")
+            asset = self._get_asset_from_field_suffix(asset_name, field_name, section.name, configuration_path)
+            if base_field_name == Keyword.UNUSED_BASIS_ALLOCATION_METHOD.value:
+                asset_2_allocation_method[asset] = value.strip()
+            else:
+                asset_2_wallet_order[asset] = self._parse_wallet_order(value, section.name, configuration_path)
         if Keyword.TIMEZONE.value not in section:
             raise RP2ValueError(f"{configuration_path}: section '{section.name}' doesn't contain mandatory field '{Keyword.TIMEZONE.value}'")
         transfer_fee_treatment: Optional[TransferFeeTreatment] = None
         if Keyword.TRANSFER_FEE_TREATMENT.value in section:
             transfer_fee_treatment = TransferFeeTreatment.from_string(section[Keyword.TRANSFER_FEE_TREATMENT.value])
-        wallet_order: List[Account] = []
+        wallet_order: Tuple[Account, ...] = ()
         if Keyword.UNUSED_BASIS_ALLOCATION_WALLET_ORDER.value in section:
-            for wallet in section[Keyword.UNUSED_BASIS_ALLOCATION_WALLET_ORDER.value].split(","):
-                wallet_order.append(self._parse_account(wallet.strip(), section.name, configuration_path))
+            wallet_order = self._parse_wallet_order(section[Keyword.UNUSED_BASIS_ALLOCATION_WALLET_ORDER.value], section.name, configuration_path)
         try:
             return PerWalletConfiguration(
                 timezone_name=section[Keyword.TIMEZONE.value].strip(),
                 transfer_fee_treatment=transfer_fee_treatment,
                 unused_basis_allocation_method=section.get(Keyword.UNUSED_BASIS_ALLOCATION_METHOD.value, "").strip() or None,
-                unused_basis_allocation_wallet_order=tuple(wallet_order),
+                unused_basis_allocation_wallet_order=wallet_order,
+                asset_2_unused_basis_allocation_method=asset_2_allocation_method,
+                asset_2_unused_basis_allocation_wallet_order=asset_2_wallet_order,
             )
         except RP2ValueError as exc:
             raise RP2ValueError(f"{configuration_path}: {exc}") from exc
+
+    # The configuration parser lowercases field names, so the asset suffix of a per-asset field is matched case-insensitively.
+    def _get_asset_from_field_suffix(self, asset_name: str, field_name: str, section_name: str, configuration_path: str) -> str:
+        candidates = [asset for asset in self.__assets if asset.lower() == asset_name.lower()]
+        if len(candidates) != 1:
+            raise RP2ValueError(
+                f"{configuration_path}: field '{field_name}' in section '{section_name}' refers to "
+                f"{'an unknown' if not candidates else 'an ambiguous (differing only by case)'} asset '{asset_name}'"
+            )
+        return candidates[0]
+
+    def _parse_wallet_order(self, value: str, section_name: str, configuration_path: str) -> Tuple[Account, ...]:
+        return tuple(self._parse_account(wallet.strip(), section_name, configuration_path) for wallet in value.split(","))
 
     # Accounts are written as <exchange>/<holder> (e.g. Coinbase Pro/Bob): exchange and holder must be defined in the general section.
     def _parse_account(self, account_string: str, section_name: str, configuration_path: str) -> Account:

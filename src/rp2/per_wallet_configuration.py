@@ -12,9 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import tzinfo
-from typing import Optional, Tuple
+from typing import Dict, Optional, Set, Tuple
 
 from dateutil import tz
 
@@ -36,6 +36,10 @@ class PerWalletConfiguration:
     # which wallets are filled with them (only needed if more than one wallet holds funds at the switch).
     unused_basis_allocation_method: Optional[str] = None
     unused_basis_allocation_wallet_order: Tuple[Account, ...] = ()
+    # Per-asset overrides of the two fields above: Rev. Proc. 2024-28 (sections 4.01(4) and 5.02(6)) applies the safe harbor to each type
+    # of digital asset separately, so each asset can have its own allocation rule (e.g. a wallet order based on its own balances).
+    asset_2_unused_basis_allocation_method: Dict[str, str] = field(default_factory=dict)
+    asset_2_unused_basis_allocation_wallet_order: Dict[str, Tuple[Account, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.timezone_name, str) or not self.timezone_name.strip():
@@ -44,21 +48,45 @@ class PerWalletConfiguration:
             raise RP2ValueError(f"Per-wallet configuration: unknown timezone '{self.timezone_name}' (use an IANA name, e.g. America/New_York)")
         if self.transfer_fee_treatment is not None:
             TransferFeeTreatment.type_check("transfer_fee_treatment", self.transfer_fee_treatment)
-        for account in self.unused_basis_allocation_wallet_order:
-            if not isinstance(account, Account):
-                raise RP2TypeError(f"Per-wallet configuration: wallet order contains a non-Account element: {account}")
-        if len(set(self.unused_basis_allocation_wallet_order)) != len(self.unused_basis_allocation_wallet_order):
-            raise RP2ValueError(f"Per-wallet configuration: wallet order contains duplicates: {self.unused_basis_allocation_wallet_order}")
+        for wallet_order in [self.unused_basis_allocation_wallet_order, *self.asset_2_unused_basis_allocation_wallet_order.values()]:
+            for account in wallet_order:
+                if not isinstance(account, Account):
+                    raise RP2TypeError(f"Per-wallet configuration: wallet order contains a non-Account element: {account}")
+            if len(set(wallet_order)) != len(wallet_order):
+                raise RP2ValueError(f"Per-wallet configuration: wallet order contains duplicates: {wallet_order}")
+        # The effective rule of each asset (default or override) needs both a method and a wallet order, or neither.
         if bool(self.unused_basis_allocation_method) != bool(self.unused_basis_allocation_wallet_order):
             raise RP2ValueError(
                 "Per-wallet configuration: 'unused_basis_allocation_method' and 'unused_basis_allocation_wallet_order' must be defined together"
             )
+        for asset in set(self.asset_2_unused_basis_allocation_method) | set(self.asset_2_unused_basis_allocation_wallet_order):
+            if bool(self.get_unused_basis_allocation_method(asset)) != bool(self.get_unused_basis_allocation_wallet_order(asset)):
+                raise RP2ValueError(
+                    f"Per-wallet configuration: the unused basis allocation of {asset} has a method or a wallet order, but not both (define the "
+                    "missing one for the asset or as a default)"
+                )
 
     @classmethod
     def type_check(cls, name: str, instance: "PerWalletConfiguration") -> "PerWalletConfiguration":
         if not isinstance(instance, cls):
             raise RP2TypeError(f"Parameter '{name}' is not of type {cls.__name__}: {instance}")
         return instance
+
+    # Allocation method of the given asset: its override, if any, otherwise the default.
+    def get_unused_basis_allocation_method(self, asset: str) -> Optional[str]:
+        return self.asset_2_unused_basis_allocation_method.get(asset, self.unused_basis_allocation_method)
+
+    # Wallet order of the given asset: its override, if any, otherwise the default.
+    def get_unused_basis_allocation_wallet_order(self, asset: str) -> Tuple[Account, ...]:
+        return self.asset_2_unused_basis_allocation_wallet_order.get(asset, self.unused_basis_allocation_wallet_order)
+
+    # All allocation method names used by the configuration (default and overrides).
+    @property
+    def unused_basis_allocation_method_names(self) -> Set[str]:
+        result = set(self.asset_2_unused_basis_allocation_method.values())
+        if self.unused_basis_allocation_method:
+            result.add(self.unused_basis_allocation_method)
+        return result
 
     @property
     def timezone(self) -> tzinfo:

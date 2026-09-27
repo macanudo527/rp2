@@ -401,6 +401,39 @@ class TestPerWalletTaxEngine(unittest.TestCase):
                 want=[_GainLoss("o1", "i2", "5", "1000", "500", True)],
             ),
             _Test(
+                description="Per-asset wallet order override: B1 fills Coinbase first even though the default order fills Kraken first",
+                transactions=[
+                    _In("i1", "2024-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "10"),
+                    _In("i2", "2024-01-03T00:00:00+00:00", "Kraken", "Buy", "200", "10"),
+                    _Out("o1", "2025-02-01T00:00:00+00:00", "Kraken", "300", "5"),
+                ],
+                per_wallet_configuration=PerWalletConfiguration(
+                    timezone_name="UTC",
+                    unused_basis_allocation_method="fifo",
+                    unused_basis_allocation_wallet_order=(_KRAKEN, _COINBASE),
+                    asset_2_unused_basis_allocation_wallet_order={_ASSET: (_COINBASE, _KRAKEN)},
+                ),
+                allocation_method=AccountingMethodFIFO(),
+                # Coinbase is filled first with the oldest lot (i1), so Kraken gets i2.
+                want=[_GainLoss("o1", "i2", "5", "1000", "500", True)],
+            ),
+            _Test(
+                description="A per-asset override for another asset doesn't affect this one (the default order fills Kraken first)",
+                transactions=[
+                    _In("i1", "2024-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "10"),
+                    _In("i2", "2024-01-03T00:00:00+00:00", "Kraken", "Buy", "200", "10"),
+                    _Out("o1", "2025-02-01T00:00:00+00:00", "Kraken", "300", "5"),
+                ],
+                per_wallet_configuration=PerWalletConfiguration(
+                    timezone_name="UTC",
+                    unused_basis_allocation_method="fifo",
+                    unused_basis_allocation_wallet_order=(_KRAKEN, _COINBASE),
+                    asset_2_unused_basis_allocation_wallet_order={"B2": (_COINBASE, _KRAKEN)},
+                ),
+                allocation_method=AccountingMethodFIFO(),
+                want=[_GainLoss("o1", "i1", "5", "500", "1000", True)],
+            ),
+            _Test(
                 description="Before the switch universal application is unchanged (the 2023 Kraken sale uses the Coinbase lot)",
                 transactions=[
                     _In("i1", "2023-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "2"),
