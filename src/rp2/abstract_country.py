@@ -13,7 +13,7 @@
 # limitations under the License.
 
 
-from typing import List, Set
+from typing import List, Optional, Set
 
 from pycountry import countries, currencies
 
@@ -91,3 +91,8 @@ class AbstractCountry:
     # Default language to use at report generation if the user doesn't specify it on the command line (in ISO 639-1 format)
     def get_default_generation_language(self) -> str:
         raise NotImplementedError("Abstract function")
+
+    # First tax year in which per-wallet application is used (earlier years use universal application). None means that the country
+    # always uses universal application: per-wallet application is then rejected.
+    def get_per_wallet_application_start_year(self) -> Optional[int]:
+        return None

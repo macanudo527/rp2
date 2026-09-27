@@ -264,14 +264,18 @@ class ComputedData:
             crypto_running_sum += gain_loss.crypto_amount
             self.__crypto_gain_loss_running_sum[gain_loss] = crypto_running_sum
 
-        # Compute in lot sold percentages
+        # Compute in lot sold percentages. In per-wallet application gain/losses can refer to artificial lots (see TransferAnalyzer): their
+        # sales are attributed to the original lot, which is the one in the input.
         self.__in_lot_sold_percentage: Dict[InTransaction, RP2Decimal] = {}
         for entry in self.__filtered_gain_loss_set:
             gain_loss = cast(GainLoss, entry)
-            if not gain_loss.acquired_lot or gain_loss.acquired_lot.timestamp.date() < from_date or gain_loss.acquired_lot.timestamp.date() > to_date:
+            if not gain_loss.acquired_lot:
                 continue
-            self.__in_lot_sold_percentage[gain_loss.acquired_lot] = (
-                self.__in_lot_sold_percentage.setdefault(gain_loss.acquired_lot, ZERO) + gain_loss.acquired_lot_fraction_percentage
+            original_lot = gain_loss.acquired_lot.original_lot
+            if original_lot.timestamp.date() < from_date or original_lot.timestamp.date() > to_date:
+                continue
+            self.__in_lot_sold_percentage[original_lot] = (
+                self.__in_lot_sold_percentage.setdefault(original_lot, ZERO) + gain_loss.crypto_amount / original_lot.crypto_in
             )
 
         if self.__filtered_taxable_event_set.asset != self.__asset:

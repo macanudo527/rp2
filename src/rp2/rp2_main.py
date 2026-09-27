@@ -39,8 +39,8 @@ from rp2.configuration import (
 from rp2.input_data import InputData
 from rp2.localization import set_generation_language
 from rp2.logger import LOG_FILE, LOGGER
-from rp2.rp2_error import RP2RuntimeError
 from rp2.ods_parser import open_ods, parse_ods
+from rp2.per_wallet_configuration import PerWalletConfiguration
 from rp2.tax_engine import compute_tax, compute_tax_per_wallet
 
 _VERSION: str = "1.7.2"
@@ -105,21 +105,8 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
 
         old_year: int = MIN_DATE.year
         years_2_accounting_methods: AVLTree[int, AbstractAccountingMethod] = AVLTree()
-        transfer_semantics: Optional[AbstractAccountingMethod] = None
         for year, accounting_method_name in years_2_accounting_method_names.items():
-            try:
-                accounting_method_module: ModuleType = import_module(
-                    f"{_ACCOUNTING_METHOD_PACKAGE}.{accounting_method_name}", package=_ACCOUNTING_METHOD_PACKAGE
-                )
-            except ModuleNotFoundError:
-                LOGGER.error("Invalid/unsupported accounting method: %s", accounting_method_name)
-                sys.exit(1)
-            if not hasattr(accounting_method_module, "AccountingMethod"):
-                LOGGER.error("Accounting method plugin %s doesn't have an AccountingMethod class", accounting_method_name)
-                sys.exit(1)
-            accounting_method: AbstractAccountingMethod = accounting_method_module.AccountingMethod()
-            if transfer_semantics is None:
-                transfer_semantics = accounting_method
+            accounting_method: AbstractAccountingMethod = _load_accounting_method(accounting_method_name)
             if len(years_2_accounting_method_names) == 1:
                 LOGGER.info("Accounting method: %s", accounting_method_name)
             else:
@@ -131,6 +118,31 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
             old_year = year
 
         accounting_engine: AccountingEngine = AccountingEngine(years_2_methods=years_2_accounting_methods)
+
+        per_wallet_configuration: Optional[PerWalletConfiguration] = None
+        unused_basis_allocation_method: Optional[AbstractAccountingMethod] = None
+        per_wallet_start_year: Optional[int] = country.get_per_wallet_application_start_year()
+        if args.per_wallet:
+            if per_wallet_start_year is None:
+                LOGGER.error("Per-wallet application (-w) is not supported for country '%s': it always uses universal application.", country.country_iso_code)
+                sys.exit(1)
+            per_wallet_configuration = configuration.per_wallet_configuration
+            if per_wallet_configuration is None:
+                LOGGER.error("Per-wallet application (-w) requires a 'per_wallet' section in the configuration file (see docs/input_files.md).")
+                sys.exit(1)
+            if per_wallet_configuration.unused_basis_allocation_method:
+                if per_wallet_configuration.unused_basis_allocation_method not in country.get_accounting_methods():
+                    LOGGER.error("Invalid/unsupported unused basis allocation method: %s", per_wallet_configuration.unused_basis_allocation_method)
+                    sys.exit(1)
+                unused_basis_allocation_method = _load_accounting_method(per_wallet_configuration.unused_basis_allocation_method)
+            LOGGER.info(
+                "Application: universal before %d, per-wallet from %d (timezone %s)",
+                per_wallet_start_year,
+                per_wallet_start_year,
+                per_wallet_configuration.timezone_name,
+            )
+        elif configuration.per_wallet_configuration is not None:
+            LOGGER.warning("The configuration file has a 'per_wallet' section, but per-wallet application is off (use -w to turn it on).")
 
         LOGGER.info("Configuration file: %s", args.configuration_file)
 
@@ -155,18 +167,25 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
             input_data: InputData = parse_ods(configuration=configuration, asset=asset, input_file_handle=input_file_handle)
             LOGGER.debug("InputData object: %s", input_data)
 
-            if args.per_wallet:
-                if transfer_semantics is None:
-                    raise RP2RuntimeError("Internal error: transfer_semantics is None")
-                LOGGER.info("Lot tracking: per-wallet (IRS 2025+ compliance)")
-                computed_data: ComputedData = compute_tax_per_wallet(
+            computed_data: ComputedData
+            if per_wallet_configuration is not None:
+                computed_data = compute_tax_per_wallet(
                     configuration=configuration,
                     accounting_engine=accounting_engine,
                     input_data=input_data,
-                    transfer_semantics=transfer_semantics,
+                    per_wallet_configuration=per_wallet_configuration,
+                    allocation_method=unused_basis_allocation_method,
                 )
             else:
-                LOGGER.info("Lot tracking: universal")
+                if per_wallet_start_year is not None and _has_transactions_from_year(input_data, per_wallet_start_year):
+                    LOGGER.warning(
+                        "%s has transactions in %d or later: %s requires per-wallet application from %d, but RP2 is using universal application "
+                        "(use -w to turn per-wallet application on).",
+                        asset,
+                        per_wallet_start_year,
+                        country.country_iso_code.upper(),
+                        per_wallet_start_year,
+                    )
                 computed_data = compute_tax(configuration=configuration, accounting_engine=accounting_engine, input_data=input_data)
             LOGGER.debug("ComputedData object: %s", computed_data)
 
@@ -190,6 +209,31 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
     LOGGER.info("Log file: %s", LOG_FILE)
     LOGGER.info("Generated output directory: %s", args.output_dir)
     LOGGER.info("Done")
+
+
+def _load_accounting_method(accounting_method_name: str) -> AbstractAccountingMethod:
+    try:
+        accounting_method_module: ModuleType = import_module(f"{_ACCOUNTING_METHOD_PACKAGE}.{accounting_method_name}", package=_ACCOUNTING_METHOD_PACKAGE)
+    except ModuleNotFoundError:
+        LOGGER.error("Invalid/unsupported accounting method: %s", accounting_method_name)
+        sys.exit(1)
+    if not hasattr(accounting_method_module, "AccountingMethod"):
+        LOGGER.error("Accounting method plugin %s doesn't have an AccountingMethod class", accounting_method_name)
+        sys.exit(1)
+    result: AbstractAccountingMethod = accounting_method_module.AccountingMethod()
+    return result
+
+
+def _has_transactions_from_year(input_data: InputData, year: int) -> bool:
+    return any(
+        transaction.timestamp.year >= year
+        for transaction_set in (
+            input_data.unfiltered_in_transaction_set,
+            input_data.unfiltered_out_transaction_set,
+            input_data.unfiltered_intra_transaction_set,
+        )
+        for transaction in transaction_set
+    )
 
 
 def _find_and_run_report_generators(
@@ -358,7 +402,10 @@ def _setup_argument_parser(country: AbstractCountry) -> ArgumentParser:
         action="store_true",
         dest="per_wallet",
         default=False,
-        help=("use per-wallet lot tracking (required for transactions on or after Jan 1, 2025 " "under IRS digital asset regulations)"),
+        help=(
+            "use per-wallet application from the country's per-wallet start year (e.g. 2025 in the US); earlier years use universal "
+            "application. Requires a 'per_wallet' section in the configuration file"
+        ),
     )
     parser.add_argument(
         "-t",

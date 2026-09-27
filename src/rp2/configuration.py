@@ -18,15 +18,18 @@ from datetime import date, datetime
 from enum import Enum
 from pathlib import Path
 from threading import Lock
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 
 from dateutil.parser import parse
 from jsonschema import validate
 
 from rp2.abstract_country import AbstractCountry
+from rp2.account import Account
 from rp2.configuration_schema import CONFIGURATION_SCHEMA
+from rp2.per_wallet_configuration import PerWalletConfiguration
 from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2TypeError, RP2ValueError
+from rp2.transfer_fee_treatment import TransferFeeTreatment
 
 MIN_DATE: date = date(1970, 1, 1)
 MAX_DATE: date = date(9999, 12, 31)
@@ -60,12 +63,25 @@ class Keyword(Enum):
     INTRA_HEADER = "intra_header"
     NOTES = "notes"
     OUT_HEADER = "out_header"
+    PER_WALLET = "per_wallet"
     SPOT_PRICE = "spot_price"
     TIMESTAMP = "timestamp"
+    TIMEZONE = "timezone"
     TO_EXCHANGE = "to_exchange"
     TO_HOLDER = "to_holder"
     TRANSACTION_TYPE = "transaction_type"
+    TRANSFER_FEE_TREATMENT = "transfer_fee_treatment"
     UNIQUE_ID = "unique_id"
+    UNUSED_BASIS_ALLOCATION_METHOD = "unused_basis_allocation_method"
+    UNUSED_BASIS_ALLOCATION_WALLET_ORDER = "unused_basis_allocation_wallet_order"
+
+
+_PER_WALLET_FIELDS: Set[str] = {
+    Keyword.TIMEZONE.value,
+    Keyword.TRANSFER_FEE_TREATMENT.value,
+    Keyword.UNUSED_BASIS_ALLOCATION_METHOD.value,
+    Keyword.UNUSED_BASIS_ALLOCATION_WALLET_ORDER.value,
+}
 
 
 _HEADER_COLUMNS: Dict[str, Set[str]] = {
@@ -151,6 +167,8 @@ class Configuration:  # pylint: disable=too-many-public-methods
         self.__holders: Set[str] = set()
         self.__generators: Set[str] = {f"{REPORT_GENERATOR_PACKAGE}.{generator}" for generator in country.get_report_generators()}
         self.__years_2_accounting_method_names: Dict[int, str] = {}
+        self.__per_wallet_section: Optional[SectionProxy] = None
+        self.__per_wallet_configuration: Optional[PerWalletConfiguration] = None
         self.__artificial_id_counter: int = 0
         self.__lock = Lock()
 
@@ -199,6 +217,10 @@ class Configuration:  # pylint: disable=too-many-public-methods
                     if self.__years_2_accounting_method_names:
                         raise RP2ValueError(f"{configuration_path}: section '{normalized_section_name}' found multiple times in configuration file")
                     self.__years_2_accounting_method_names = self._validate_accounting_method_section(ini_configuration[section_name], configuration_path)
+                elif normalized_section_name == Keyword.PER_WALLET.value:
+                    if self.__per_wallet_section is not None:
+                        raise RP2ValueError(f"{configuration_path}: section '{normalized_section_name}' found multiple times in configuration file")
+                    self.__per_wallet_section = ini_configuration[section_name]
                 else:
                     raise RP2ValueError(f"{configuration_path}: invalid section '{section_name}' found")
 
@@ -214,6 +236,10 @@ class Configuration:  # pylint: disable=too-many-public-methods
             raise RP2ValueError(f"{configuration_path}: empty '{Keyword.OUT_HEADER.value}' section")
         if not self.__intra_header:
             raise RP2ValueError(f"{configuration_path}: empty '{Keyword.INTRA_HEADER.value}' section")
+
+        # The per-wallet section refers to exchanges and holders, so it's validated after the general section.
+        if self.__per_wallet_section is not None:
+            self.__per_wallet_configuration = self._validate_per_wallet_section(self.__per_wallet_section, configuration_path)
 
         # Used by __repr__()
         self.__sorted_assets: List[str] = sorted(self.__assets)
@@ -289,6 +315,39 @@ class Configuration:  # pylint: disable=too-many-public-methods
                 raise RP2ValueError(f"{configuration_path}: invalid year type in accounting method section (integer was expected): {year}") from exc
         return result
 
+    def _validate_per_wallet_section(self, section: SectionProxy, configuration_path: str) -> PerWalletConfiguration:
+        for field_name in section.keys():
+            if field_name not in _PER_WALLET_FIELDS:
+                raise RP2ValueError(f"{configuration_path}: invalid field '{field_name}' in section '{section.name}'")
+        if Keyword.TIMEZONE.value not in section:
+            raise RP2ValueError(f"{configuration_path}: section '{section.name}' doesn't contain mandatory field '{Keyword.TIMEZONE.value}'")
+        transfer_fee_treatment: Optional[TransferFeeTreatment] = None
+        if Keyword.TRANSFER_FEE_TREATMENT.value in section:
+            transfer_fee_treatment = TransferFeeTreatment.from_string(section[Keyword.TRANSFER_FEE_TREATMENT.value])
+        wallet_order: List[Account] = []
+        if Keyword.UNUSED_BASIS_ALLOCATION_WALLET_ORDER.value in section:
+            for wallet in section[Keyword.UNUSED_BASIS_ALLOCATION_WALLET_ORDER.value].split(","):
+                wallet_order.append(self._parse_account(wallet.strip(), section.name, configuration_path))
+        try:
+            return PerWalletConfiguration(
+                timezone_name=section[Keyword.TIMEZONE.value].strip(),
+                transfer_fee_treatment=transfer_fee_treatment,
+                unused_basis_allocation_method=section.get(Keyword.UNUSED_BASIS_ALLOCATION_METHOD.value, "").strip() or None,
+                unused_basis_allocation_wallet_order=tuple(wallet_order),
+            )
+        except RP2ValueError as exc:
+            raise RP2ValueError(f"{configuration_path}: {exc}") from exc
+
+    # Accounts are written as <exchange>/<holder> (e.g. Coinbase Pro/Bob): exchange and holder must be defined in the general section.
+    def _parse_account(self, account_string: str, section_name: str, configuration_path: str) -> Account:
+        candidates = [Account(exchange, holder) for exchange in self.__exchanges for holder in self.__holders if account_string == f"{exchange}/{holder}"]
+        if len(candidates) != 1:
+            raise RP2ValueError(
+                f"{configuration_path}: invalid wallet '{account_string}' in section '{section_name}' (expected <exchange>/<holder>, using exchanges "
+                "and holders from the general section)"
+            )
+        return candidates[0]
+
     def __repr__(self) -> str:
         return (
             f"Configuration(configuration_path={self.configuration_path}, "
@@ -334,6 +393,10 @@ class Configuration:  # pylint: disable=too-many-public-methods
     @property
     def years_2_accounting_method_names(self) -> Dict[int, str]:
         return self.__years_2_accounting_method_names
+
+    @property
+    def per_wallet_configuration(self) -> Optional[PerWalletConfiguration]:
+        return self.__per_wallet_configuration
 
     def __get_table_constructor_argument_pack(self, data: List[Any], table_type: str, header: Dict[str, int]) -> Dict[str, Any]:
         if not isinstance(data, List):
