@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from datetime import datetime
-from typing import Dict, Iterable, Iterator, List, Optional, cast
+from typing import Dict, Iterable, Iterator, List, NamedTuple, Optional, cast
 
 from rp2.abstract_accounting_method import AbstractAccountingMethod
 from rp2.abstract_transaction import AbstractTransaction
@@ -193,12 +193,20 @@ def _create_unfiltered_gain_and_loss_set(
     return gain_loss_set
 
 
-# Per-wallet application (e.g. US from 2025, Treas. Reg. §1.1012-1(j)). Tax years before the country's per-wallet start year use universal
-# application, exactly as compute_tax() does. At the switch (January 1 of the start year, in the configured timezone):
-# - the lots that are still unused under universal application are allocated to the wallets that hold funds (Rev. Proc. 2024-28 global
-#   allocation, see UnusedBasisAllocator);
-# - from then on TransferAnalyzer tracks lots per wallet and pairs every taxable event with lots of its own wallet.
+# Taxable events and their gain/loss pairings for a part of the transaction history.
+class _TaxResult(NamedTuple):
+    taxable_events: List[AbstractTransaction]
+    gain_loss_list: List[GainLoss]
+
+
+# Per-wallet application (e.g. US from 2025, Treas. Reg. §1.1012-1(j)). The computation has three phases:
+# 1) before the switch (January 1 of the country's per-wallet start year, in the configured timezone): universal application, exactly as
+#    compute_tax() does;
+# 2) at the switch: the lots that are still unused under universal application are allocated to the wallets that hold funds (Rev. Proc.
+#    2024-28 global allocation, see UnusedBasisAllocator);
+# 3) after the switch: TransferAnalyzer tracks lots per wallet and pairs every taxable event with lots of its own wallet.
 # allocation_method is the unused basis allocation method of this asset (see PerWalletConfiguration.get_unused_basis_allocation_method()).
+# The returned ComputedData refers to the original (universal) input data, so that reports show the user's transactions.
 def compute_tax_per_wallet(
     configuration: Configuration,
     accounting_engine: AccountingEngine,
@@ -221,57 +229,40 @@ def compute_tax_per_wallet(
     universal_transactions = [transaction for transaction in all_transactions if transaction.timestamp < switch_timestamp]
     per_wallet_transactions = [transaction for transaction in all_transactions if transaction.timestamp >= switch_timestamp]
 
-    # Universal application before the switch.
-    taxable_events: List[AbstractTransaction] = []
-    gain_loss_list: List[GainLoss] = []
+    # Phase 1: universal application before the switch.
     universal_input_data: Optional[InputData] = None
+    universal_result = _TaxResult([], [])
     if universal_transactions:
         universal_input_data = _create_input_data(configuration, input_data.asset, universal_transactions)
-        universal_taxable_event_set = universal_input_data.create_unfiltered_taxable_event_set(configuration)
-        taxable_events.extend(cast(Iterable[AbstractTransaction], universal_taxable_event_set))
-        gain_loss_list.extend(
-            cast(Iterable[GainLoss], _create_unfiltered_gain_and_loss_set(configuration, accounting_engine, universal_input_data, universal_taxable_event_set))
-        )
+        universal_result = _compute_universal_tax(configuration, accounting_engine, universal_input_data)
 
-    # Per-wallet application from the switch on.
+    per_wallet_result = _TaxResult([], [])
     if per_wallet_transactions:
-        LOGGER.info("%s: per-wallet application from %s (%d transactions)", input_data.asset, switch_timestamp, len(per_wallet_transactions))
+        # Phase 2: allocation of unused basis at the switch (nothing to allocate if there were no transactions before it).
         allocated_lots: List[InTransaction] = []
         if universal_input_data is not None:
-            unused_lots = _get_unused_lots(universal_input_data, gain_loss_list)
+            unused_lots = _get_unused_lots(universal_input_data, universal_result.gain_loss_list)
+            account_2_balance = _get_account_balances(universal_transactions)
+            _check_balances_match_unused_lots(account_2_balance, unused_lots)
             allocated_lots = UnusedBasisAllocator(
                 configuration,
                 switch_timestamp,
                 unused_lots,
-                _get_account_balances(universal_transactions, unused_lots),
+                account_2_balance,
                 allocation_method,
                 list(per_wallet_configuration.get_unused_basis_allocation_wallet_order(input_data.asset)),
             ).allocate()
-        transfer_fee_treatment = _get_transfer_fee_treatment(per_wallet_transactions, per_wallet_configuration)
-        per_wallet_input_data = _create_input_data(configuration, input_data.asset, per_wallet_transactions + cast(List[AbstractTransaction], allocated_lots))
-        start_year_accounting_method = accounting_engine.years_2_methods.find_max_value_less_than(start_year)
-        if start_year_accounting_method is None:
-            raise RP2RuntimeError(f"Internal error: no accounting method assigned for year {start_year}")
-        transfer_analysis_result = TransferAnalyzer(
-            configuration,
-            start_year_accounting_method,
-            per_wallet_input_data,
-            years_2_accounting_methods=accounting_engine.years_2_methods,
-            transfer_fee_treatment=transfer_fee_treatment,
-        ).analyze_and_pair()
-        LOGGER.info("%s: per-wallet application: found %d wallets", input_data.asset, len(transfer_analysis_result.wallet_2_input_data))
-        gain_loss_list.extend(transfer_analysis_result.gain_loss_list)
-        taxable_events.extend(
-            transaction
-            for transaction in per_wallet_transactions
-            if transaction.is_taxable() and not (isinstance(transaction, IntraTransaction) and transfer_fee_treatment == TransferFeeTreatment.BASIS_CARRYOVER)
+        # Phase 3: per-wallet application after the switch.
+        LOGGER.info("%s: per-wallet application from %s (%d transactions)", input_data.asset, switch_timestamp, len(per_wallet_transactions))
+        per_wallet_result = _compute_per_wallet_tax(
+            configuration, accounting_engine, input_data.asset, start_year, per_wallet_transactions, allocated_lots, per_wallet_configuration
         )
 
     taxable_event_set = TransactionSet(configuration, "MIXED", input_data.asset, MIN_DATE, MAX_DATE)
-    for transaction in taxable_events:
+    for transaction in universal_result.taxable_events + per_wallet_result.taxable_events:
         taxable_event_set.add_entry(transaction)
     gain_loss_set = GainLossSet(configuration, input_data.asset, MIN_DATE, MAX_DATE)
-    for gain_loss in gain_loss_list:
+    for gain_loss in universal_result.gain_loss_list + per_wallet_result.gain_loss_list:
         gain_loss_set.add_entry(gain_loss)
 
     return ComputedData(
@@ -282,6 +273,46 @@ def compute_tax_per_wallet(
         configuration.from_date,
         configuration.to_date,
     )
+
+
+# Universal application: the same computation as compute_tax(), restricted to the given input data.
+def _compute_universal_tax(configuration: Configuration, accounting_engine: AccountingEngine, input_data: InputData) -> _TaxResult:
+    taxable_event_set = input_data.create_unfiltered_taxable_event_set(configuration)
+    gain_loss_set = _create_unfiltered_gain_and_loss_set(configuration, accounting_engine, input_data, taxable_event_set)
+    return _TaxResult(list(cast(Iterable[AbstractTransaction], taxable_event_set)), list(cast(Iterable[GainLoss], gain_loss_set)))
+
+
+# Per-wallet application of the transactions after the switch, starting from the lots allocated at the switch. Transfers and disposals use
+# the accounting method of their year (the same map used by the accounting engine).
+def _compute_per_wallet_tax(
+    configuration: Configuration,
+    accounting_engine: AccountingEngine,
+    asset: str,
+    start_year: int,
+    transactions: List[AbstractTransaction],
+    allocated_lots: List[InTransaction],
+    per_wallet_configuration: PerWalletConfiguration,
+) -> _TaxResult:
+    transfer_fee_treatment = _get_transfer_fee_treatment(transactions, per_wallet_configuration)
+    input_data = _create_input_data(configuration, asset, transactions + cast(List[AbstractTransaction], allocated_lots))
+    start_year_accounting_method = accounting_engine.years_2_methods.find_max_value_less_than(start_year)
+    if start_year_accounting_method is None:
+        raise RP2RuntimeError(f"Internal error: no accounting method assigned for year {start_year}")
+    transfer_analysis_result = TransferAnalyzer(
+        configuration,
+        start_year_accounting_method,
+        input_data,
+        years_2_accounting_methods=accounting_engine.years_2_methods,
+        transfer_fee_treatment=transfer_fee_treatment,
+    ).analyze_and_pair()
+    LOGGER.info("%s: per-wallet application: found %d wallets", asset, len(transfer_analysis_result.wallet_2_input_data))
+    # With BASIS_CARRYOVER, transfer fees are not taxable events.
+    taxable_events = [
+        transaction
+        for transaction in transactions
+        if transaction.is_taxable() and not (isinstance(transaction, IntraTransaction) and transfer_fee_treatment == TransferFeeTreatment.BASIS_CARRYOVER)
+    ]
+    return _TaxResult(taxable_events, transfer_analysis_result.gain_loss_list)
 
 
 # The tax year of a transaction is the year of its timestamp (in the timezone of the timestamp itself). A transaction whose tax year is on
@@ -299,6 +330,7 @@ def _check_tax_year_boundary(transactions: List[AbstractTransaction], switch_tim
         )
 
 
+# Builds an InputData from a list of mixed transactions (InputData requires at least one acquisition).
 def _create_input_data(configuration: Configuration, asset: str, transactions: List[AbstractTransaction]) -> InputData:
     in_transaction_set = TransactionSet(configuration, "IN", asset, MIN_DATE, MAX_DATE)
     out_transaction_set = TransactionSet(configuration, "OUT", asset, MIN_DATE, MAX_DATE)
@@ -317,7 +349,7 @@ def _create_input_data(configuration: Configuration, asset: str, transactions: L
     return InputData(asset, in_transaction_set, out_transaction_set, intra_transaction_set)
 
 
-# Lots (and amounts) not disposed of under universal application.
+# Lots (and amounts) not disposed of under universal application: the "unused basis" of Rev. Proc. 2024-28.
 def _get_unused_lots(universal_input_data: InputData, gain_loss_list: List[GainLoss]) -> List[UnusedLot]:
     lot_2_used_amount: Dict[InTransaction, RP2Decimal] = {}
     for gain_loss in gain_loss_list:
@@ -332,8 +364,8 @@ def _get_unused_lots(universal_input_data: InputData, gain_loss_list: List[GainL
     return result
 
 
-# Balance of each wallet at the switch. It must match the unused lots: if it doesn't, the input is inconsistent (e.g. negative balances).
-def _get_account_balances(transactions: List[AbstractTransaction], unused_lots: List[UnusedLot]) -> Dict[Account, RP2Decimal]:
+# Balance of each wallet after the given transactions.
+def _get_account_balances(transactions: List[AbstractTransaction]) -> Dict[Account, RP2Decimal]:
     result: Dict[Account, RP2Decimal] = {}
     for transaction in transactions:
         if isinstance(transaction, InTransaction):
@@ -347,16 +379,23 @@ def _get_account_balances(transactions: List[AbstractTransaction], unused_lots: 
             to_account = Account(transaction.to_exchange, transaction.to_holder)
             result[from_account] = result.get(from_account, ZERO) - transaction.crypto_sent
             result[to_account] = result.get(to_account, ZERO) + transaction.crypto_received
-    for account, balance in result.items():
-        if balance < ZERO and not RP2Decimal.is_equal_within_precision(balance, ZERO, CRYPTO_BALANCE_DECIMAL_MASK):
-            raise RP2ValueError(f"Balance of {account.exchange}/{account.holder} is negative ({balance}) at the switch to per-wallet application")
-    total_balance = RP2Decimal(sum((balance for balance in result.values() if balance > ZERO), ZERO))
-    total_unused = RP2Decimal(sum((unused_lot.amount for unused_lot in unused_lots), ZERO))
-    if not RP2Decimal.is_equal_within_precision(total_balance, total_unused, CRYPTO_BALANCE_DECIMAL_MASK):
-        raise RP2ValueError(f"Total wallet balance ({total_balance}) doesn't match unused lot amount ({total_unused}) at the switch to per-wallet application")
     return result
 
 
+# At the switch the wallets must hold exactly the units of the unused lots (Rev. Proc. 2024-28 allocates unused basis to "the same number of
+# remaining digital asset units"): a mismatch means the input is inconsistent (e.g. a wallet with a negative balance).
+def _check_balances_match_unused_lots(account_2_balance: Dict[Account, RP2Decimal], unused_lots: List[UnusedLot]) -> None:
+    for account, balance in account_2_balance.items():
+        if balance < ZERO and not RP2Decimal.is_equal_within_precision(balance, ZERO, CRYPTO_BALANCE_DECIMAL_MASK):
+            raise RP2ValueError(f"Balance of {account.exchange}/{account.holder} is negative ({balance}) at the switch to per-wallet application")
+    total_balance = RP2Decimal(sum((balance for balance in account_2_balance.values() if balance > ZERO), ZERO))
+    total_unused = RP2Decimal(sum((unused_lot.amount for unused_lot in unused_lots), ZERO))
+    if not RP2Decimal.is_equal_within_precision(total_balance, total_unused, CRYPTO_BALANCE_DECIMAL_MASK):
+        raise RP2ValueError(f"Total wallet balance ({total_balance}) doesn't match unused lot amount ({total_unused}) at the switch to per-wallet application")
+
+
+# The configured transfer fee treatment. It's mandatory only if some transfer after the switch actually has a crypto fee (unsettled US law:
+# RP2 never picks a treatment silently).
 def _get_transfer_fee_treatment(transactions: List[AbstractTransaction], per_wallet_configuration: PerWalletConfiguration) -> TransferFeeTreatment:
     if per_wallet_configuration.transfer_fee_treatment is not None:
         return per_wallet_configuration.transfer_fee_treatment

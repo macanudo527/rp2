@@ -244,12 +244,11 @@ class TestPerWalletProperties(unittest.TestCase):
 
         disposed_amount: Dict[InTransaction, RP2Decimal] = {}
         disposed_basis = ZERO
-        seen: Set[Tuple[str, str]] = set()
+        # A taxable event is paired with a given lot at most once (GainLoss.internal_id is "<taxable event id>-><lot id>").
+        seen_gain_loss_ids: Set[str] = set()
         for gain_loss in result.gain_loss_list:
-            # A taxable event is paired with a given lot at most once.
-            key = (gain_loss.internal_id, "")
-            self.assertNotIn(key, seen)
-            seen.add(key)
+            self.assertNotIn(gain_loss.internal_id, seen_gain_loss_ids)
+            seen_gain_loss_ids.add(gain_loss.internal_id)
             if gain_loss.acquired_lot is None:
                 continue
             original_lot = gain_loss.acquired_lot.original_lot
@@ -259,7 +258,8 @@ class TestPerWalletProperties(unittest.TestCase):
         acquired_basis = RP2Decimal(sum((lot.fiat_in_with_fee for lot in input_data.unfiltered_in_transaction_set), ZERO))  # type: ignore
         self.assertLess(abs(acquired_basis - disposed_basis - held_basis), _TOLERANCE * max(acquired_basis, RP2Decimal("1")))
 
-        total_fees = RP2Decimal(sum((step.fee for step in steps if step.kind == "intra"), ZERO))
+        # Crypto fees of all transfers (with BASIS_CARRYOVER these units leave their lots without a gain/loss).
+        total_transfer_fees = RP2Decimal(sum((step.fee for step in steps if step.kind == "intra"), ZERO))
         for entry in input_data.unfiltered_in_transaction_set:
             lot = entry
             assert isinstance(lot, InTransaction)
@@ -272,7 +272,7 @@ class TestPerWalletProperties(unittest.TestCase):
         if treatment == TransferFeeTreatment.BASIS_CARRYOVER:
             total_accounted = RP2Decimal(sum(disposed_amount.values(), ZERO)) + RP2Decimal(sum(held_amount.values(), ZERO))
             total_in = RP2Decimal(sum((lot.crypto_in for lot in input_data.unfiltered_in_transaction_set), ZERO))  # type: ignore
-            self.assertEqual(total_accounted + total_fees, total_in)
+            self.assertEqual(total_accounted + total_transfer_fees, total_in)
 
     @_SETTINGS
     @given(steps=_histories([_ACCOUNTS[0]]), method_name=st.sampled_from(sorted(_METHODS)))

@@ -190,7 +190,7 @@ RP2 has no dedicated slash transaction type. Involuntary stake losses (slashing)
 `RP2Decimal` uses 13 decimal places for crypto amounts (`CRYPTO_DECIMALS = 13`). Ethereum and other EVM chains use 18 decimal places (wei). Transaction amounts with more than 13 significant decimal digits will be truncated. For dust amounts this may cause minor discrepancies against on-chain records.
 
 ### Same-Timestamp Ordering
-When two transactions share the same timestamp, their relative order is determined by their row number in the input spreadsheet. For LIFO and HIFO methods, swapping same-timestamp rows changes which lot is selected, potentially altering the tax outcome with no warning.
+When two transactions share the same timestamp, their relative order is determined by their row number in the input spreadsheet. For LIFO and HIFO methods, swapping same-timestamp rows changes which lot is selected, potentially altering the tax outcome with no warning. In per-wallet application `TransferAnalyzer` orders same-timestamp transactions as In, Intra, Out, then by row, so funds that arrive at an instant can be disposed of at the same instant.
 
 ### Universal Lot Pool (default path)
 All accounting methods (FIFO, LIFO, HIFO, LOFO) operate on a single global pool of lots per asset, regardless of which exchange or wallet the lots are held in. Per-wallet application is enabled with `-w` (countries whose `get_per_wallet_application_start_year()` is not None, currently only the US) and needs a `[per_wallet]` config section. Balance enforcement IS per-account (via `BalanceSet`), but lot selection is global in the universal path.

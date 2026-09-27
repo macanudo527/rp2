@@ -36,4 +36,4 @@ class TransferFeeTreatment(Enum):
         try:
             return cls(value.strip().lower())
         except ValueError:
-            raise RP2ValueError(f"Invalid transfer fee treatment '{value}': valid values are {', '.join(t.value for t in cls)}") from None
+            raise RP2ValueError(f"Invalid transfer fee treatment '{value}': valid values are {', '.join(treatment.value for treatment in cls)}") from None

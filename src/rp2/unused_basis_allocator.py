@@ -32,6 +32,12 @@ class UnusedLot(NamedTuple):
     amount: RP2Decimal
 
 
+# The allocation method and wallet order actually applied (see UnusedBasisAllocator._get_allocation_rule()).
+class _AllocationRule(NamedTuple):
+    allocation_method: AbstractAccountingMethod
+    wallet_order: List[Account]
+
+
 # UnusedBasisAllocator implements the transition from universal to per-wallet application: it assigns the lots that are still unused (under
 # universal application) at the switch instant to the wallets that actually hold the funds at that instant. This is the "global allocation"
 # of Rev. Proc. 2024-28: a rule-based allocation that the taxpayer must have chosen (and documented) before the switch. The rule is:
@@ -61,40 +67,47 @@ class UnusedBasisAllocator:
         self.__allocation_method = allocation_method
         self.__wallet_order = wallet_order
 
+    # Returns the allocated lots: artificial InTransactions at the switch instant, one per (wallet, lot piece).
     def allocate(self) -> List[InTransaction]:
         funded_accounts = sorted(self.__account_2_balance, key=_account_sort_key)
         if not funded_accounts:
             return []
-        wallet_order: List[Account]
-        allocation_method: AbstractAccountingMethod
-        if len(funded_accounts) == 1:
-            # Only one wallet holds funds: there's nothing to choose, all unused lots go to it.
-            wallet_order = funded_accounts
-            allocation_method = self.__allocation_method or AccountingMethodFIFO()
-        else:
-            if self.__allocation_method is None or not self.__wallet_order:
-                raise RP2ValueError(
-                    f"Unused basis allocation is needed at {self.__switch_timestamp} ({len(funded_accounts)} wallets hold "
-                    f"{self.__unused_lots[0].acquired_lot.asset if self.__unused_lots else ''} funds: "
-                    f"{', '.join(f'{account.exchange}/{account.holder}' for account in funded_accounts)}), but the 'unused_basis_allocation_method' "
-                    "and 'unused_basis_allocation_wallet_order' fields are not defined in the per_wallet section of the configuration file "
-                    "(see Rev. Proc. 2024-28)"
-                )
-            missing_accounts = [account for account in funded_accounts if account not in self.__wallet_order]
-            if missing_accounts:
-                raise RP2ValueError(
-                    "Wallets holding funds at the per-wallet switch are missing from 'unused_basis_allocation_wallet_order': "
-                    f"{', '.join(f'{account.exchange}/{account.holder}' for account in missing_accounts)}"
-                )
-            wallet_order = [account for account in self.__wallet_order if account in self.__account_2_balance]
-            allocation_method = self.__allocation_method
-
-        per_wallet_method = TransferAnalyzer.get_per_wallet_accounting_method(allocation_method)
+        rule = self._get_allocation_rule(funded_accounts)
+        per_wallet_method = TransferAnalyzer.get_per_wallet_accounting_method(rule.allocation_method)
 
         def unused_lot_sort_key(unused_lot: UnusedLot) -> AcquiredLotSortKey:
             return per_wallet_method.sort_key(unused_lot.acquired_lot)
 
-        sorted_unused_lots = sorted(self.__unused_lots, key=unused_lot_sort_key)
+        result = self._fill_wallets(rule.wallet_order, sorted(self.__unused_lots, key=unused_lot_sort_key))
+        LOGGER.info("Unused basis allocation at %s: allocated %d lot pieces to %d wallets", self.__switch_timestamp, len(result), len(rule.wallet_order))
+        return result
+
+    # The allocation rule to apply. With a single funded wallet there's nothing to choose: all unused lots go to it. With more wallets the
+    # rule must be configured explicitly (Rev. Proc. 2024-28 requires the taxpayer to choose it before the switch) and cover all of them.
+    def _get_allocation_rule(self, funded_accounts: List[Account]) -> _AllocationRule:
+        if len(funded_accounts) == 1:
+            return _AllocationRule(self.__allocation_method or AccountingMethodFIFO(), funded_accounts)
+        if self.__allocation_method is None or not self.__wallet_order:
+            raise RP2ValueError(
+                f"Unused basis allocation is needed at {self.__switch_timestamp} ({len(funded_accounts)} wallets hold "
+                f"{self.__unused_lots[0].acquired_lot.asset if self.__unused_lots else ''} funds: "
+                f"{', '.join(_account_sort_key(account) for account in funded_accounts)}), but the 'unused_basis_allocation_method' "
+                "and 'unused_basis_allocation_wallet_order' fields are not defined in the per_wallet section of the configuration file "
+                "(see Rev. Proc. 2024-28)"
+            )
+        missing_accounts = [account for account in funded_accounts if account not in self.__wallet_order]
+        if missing_accounts:
+            raise RP2ValueError(
+                "Wallets holding funds at the per-wallet switch are missing from 'unused_basis_allocation_wallet_order': "
+                f"{', '.join(_account_sort_key(account) for account in missing_accounts)}"
+            )
+        # Wallets in the order that hold no funds at the switch get nothing.
+        return _AllocationRule(self.__allocation_method, [account for account in self.__wallet_order if account in self.__account_2_balance])
+
+    # Walks the wallets (in order) and the sorted lots together, like merging two queues: each step moves as much as possible of the current
+    # lot into the current wallet, then advances whichever of the two is used up (a lot can be split across wallets and a wallet can receive
+    # several lots).
+    def _fill_wallets(self, wallet_order: List[Account], sorted_unused_lots: List[UnusedLot]) -> List[InTransaction]:
         result: List[InTransaction] = []
         lot_index = 0
         lot_amount_left = sorted_unused_lots[0].amount if sorted_unused_lots else ZERO
@@ -102,9 +115,7 @@ class UnusedBasisAllocator:
             balance_left = self.__account_2_balance[account]
             while balance_left > ZERO:
                 if lot_index >= len(sorted_unused_lots):
-                    raise RP2ValueError(
-                        f"Unused lots are insufficient to cover the balance of {account.exchange}/{account.holder} at {self.__switch_timestamp}"
-                    )
+                    raise RP2ValueError(f"Unused lots are insufficient to cover the balance of {_account_sort_key(account)} at {self.__switch_timestamp}")
                 piece_amount = min(balance_left, lot_amount_left)
                 result.append(self._create_allocated_lot(sorted_unused_lots[lot_index].acquired_lot, account, piece_amount))
                 balance_left -= piece_amount
@@ -112,9 +123,10 @@ class UnusedBasisAllocator:
                 if lot_amount_left == ZERO:
                     lot_index += 1
                     lot_amount_left = sorted_unused_lots[lot_index].amount if lot_index < len(sorted_unused_lots) else ZERO
-        LOGGER.info("Unused basis allocation at %s: allocated %d lot pieces to %d wallets", self.__switch_timestamp, len(result), len(wallet_order))
         return result
 
+    # Creates the artificial InTransaction that holds a piece of an unused lot in a wallet: it has the same per-unit basis (purchase fees
+    # included) and acquisition date as the original lot, and its timestamp is the switch instant.
     def _create_allocated_lot(self, acquired_lot: InTransaction, account: Account, amount: RP2Decimal) -> InTransaction:
         artificial_id = self.__configuration.get_new_artificial_id()
         fraction = amount / acquired_lot.crypto_in
@@ -141,5 +153,6 @@ class UnusedBasisAllocator:
         )
 
 
+# Accounts are displayed and sorted as <exchange>/<holder>, the same format used in the configuration file.
 def _account_sort_key(account: Account) -> str:
     return f"{account.exchange}/{account.holder}"

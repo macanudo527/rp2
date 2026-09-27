@@ -21,7 +21,7 @@ from importlib import import_module
 from pathlib import Path
 from pkgutil import iter_modules
 from types import ModuleType
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, NamedTuple, Optional, Set
 
 from prezzemolo.avl_tree import AVLTree
 
@@ -119,30 +119,9 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
 
         accounting_engine: AccountingEngine = AccountingEngine(years_2_methods=years_2_accounting_methods)
 
-        per_wallet_configuration: Optional[PerWalletConfiguration] = None
-        unused_basis_allocation_method_name_2_method: Dict[str, AbstractAccountingMethod] = {}
+        per_wallet_setup = _setup_per_wallet_application(args.per_wallet, configuration, country)
+        per_wallet_configuration = per_wallet_setup.per_wallet_configuration
         per_wallet_start_year: Optional[int] = country.get_per_wallet_application_start_year()
-        if args.per_wallet:
-            if per_wallet_start_year is None:
-                LOGGER.error("Per-wallet application (-w) is not supported for country '%s': it always uses universal application.", country.country_iso_code)
-                sys.exit(1)
-            per_wallet_configuration = configuration.per_wallet_configuration
-            if per_wallet_configuration is None:
-                LOGGER.error("Per-wallet application (-w) requires a 'per_wallet' section in the configuration file (see docs/input_files.md).")
-                sys.exit(1)
-            for method_name in sorted(per_wallet_configuration.unused_basis_allocation_method_names):
-                if method_name not in country.get_accounting_methods():
-                    LOGGER.error("Invalid/unsupported unused basis allocation method: %s", method_name)
-                    sys.exit(1)
-                unused_basis_allocation_method_name_2_method[method_name] = _load_accounting_method(method_name)
-            LOGGER.info(
-                "Application: universal before %d, per-wallet from %d (timezone %s)",
-                per_wallet_start_year,
-                per_wallet_start_year,
-                per_wallet_configuration.timezone_name,
-            )
-        elif configuration.per_wallet_configuration is not None:
-            LOGGER.warning("The configuration file has a 'per_wallet' section, but per-wallet application is off (use -w to turn it on).")
 
         LOGGER.info("Configuration file: %s", args.configuration_file)
 
@@ -175,7 +154,7 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
                     accounting_engine=accounting_engine,
                     input_data=input_data,
                     per_wallet_configuration=per_wallet_configuration,
-                    allocation_method=unused_basis_allocation_method_name_2_method[allocation_method_name] if allocation_method_name else None,
+                    allocation_method=per_wallet_setup.allocation_method_name_2_method[allocation_method_name] if allocation_method_name else None,
                 )
             else:
                 if per_wallet_start_year is not None and _has_transactions_from_year(input_data, per_wallet_start_year):
@@ -212,6 +191,38 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
     LOGGER.info("Done")
 
 
+# Per-wallet settings used by the main loop: per_wallet_configuration is None when per-wallet application is off.
+class _PerWalletSetup(NamedTuple):
+    per_wallet_configuration: Optional[PerWalletConfiguration]
+    allocation_method_name_2_method: Dict[str, AbstractAccountingMethod]
+
+
+# Validates the per-wallet settings (-w and the per_wallet section of the configuration file) and loads the unused basis allocation methods.
+# Per-wallet application is rejected for countries that always use universal application (e.g. Japan).
+def _setup_per_wallet_application(per_wallet: bool, configuration: Configuration, country: AbstractCountry) -> _PerWalletSetup:
+    if not per_wallet:
+        if configuration.per_wallet_configuration is not None:
+            LOGGER.warning("The configuration file has a 'per_wallet' section, but per-wallet application is off (use -w to turn it on).")
+        return _PerWalletSetup(None, {})
+    start_year = country.get_per_wallet_application_start_year()
+    if start_year is None:
+        LOGGER.error("Per-wallet application (-w) is not supported for country '%s': it always uses universal application.", country.country_iso_code)
+        sys.exit(1)
+    per_wallet_configuration = configuration.per_wallet_configuration
+    if per_wallet_configuration is None:
+        LOGGER.error("Per-wallet application (-w) requires a 'per_wallet' section in the configuration file (see docs/input_files.md).")
+        sys.exit(1)
+    allocation_method_name_2_method: Dict[str, AbstractAccountingMethod] = {}
+    for method_name in sorted(per_wallet_configuration.unused_basis_allocation_method_names):
+        if method_name not in country.get_accounting_methods():
+            LOGGER.error("Invalid/unsupported unused basis allocation method: %s", method_name)
+            sys.exit(1)
+        allocation_method_name_2_method[method_name] = _load_accounting_method(method_name)
+    LOGGER.info("Application: universal before %d, per-wallet from %d (timezone %s)", start_year, start_year, per_wallet_configuration.timezone_name)
+    return _PerWalletSetup(per_wallet_configuration, allocation_method_name_2_method)
+
+
+# Loads an accounting method plugin by name (e.g. "fifo"), exiting with an error if it doesn't exist.
 def _load_accounting_method(accounting_method_name: str) -> AbstractAccountingMethod:
     try:
         accounting_method_module: ModuleType = import_module(f"{_ACCOUNTING_METHOD_PACKAGE}.{accounting_method_name}", package=_ACCOUNTING_METHOD_PACKAGE)
@@ -225,6 +236,7 @@ def _load_accounting_method(accounting_method_name: str) -> AbstractAccountingMe
     return result
 
 
+# True if the input has transactions in the given year or later (used to warn US users who forget -w).
 def _has_transactions_from_year(input_data: InputData, year: int) -> bool:
     return any(
         transaction.timestamp.year >= year
