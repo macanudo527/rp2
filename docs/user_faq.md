@@ -103,7 +103,7 @@ Accounting methods vary country by country, as described in the [supported count
 By default RP2 uses [universal application](https://www.forbes.com/sites/shehanchandrasekera/2020/09/17/what-crypto-taxpayers-need-to-know-about-fifo-lifo-hifo-specific-id/): all lots of a coin form one pool, regardless of the wallet or exchange they are in. Per-wallet application (each wallet or exchange account has its own pool) is available experimentally for countries that require it, via the `-w` command line option: see [How Do I Use Per-Wallet Application?](#how-do-i-use-per-wallet-application). Development is tracked in [issue #135](https://github.com/eprbell/rp2/issues/135).
 
 ### How Do I Use Per-Wallet Application?
-In the US, from January 1st, 2025 cost basis must be identified wallet by wallet (Treas. Reg. §1.1012-1(j)): a sale on Kraken can only use lots that are on Kraken. Tax years before 2025 keep using universal application. To enable it:
+In the US, from January 1st, 2025 cost basis must be identified wallet by wallet ([Treas. Reg. §1.1012-1(j)](https://www.ecfr.gov/current/title-26/section-1.1012-1#p-1.1012-1(j))): a sale on Kraken can only use lots that are on Kraken. Tax years before 2025 keep using universal application. To enable it:
 1. add a `per_wallet` section to the [config file](input_files.md#the-config-file) (at least the `timezone` field);
 2. run RP2 with `-w` (e.g. `rp2_us -w -o output config/my_config.ini input/my_input.ods`).
 
@@ -112,7 +112,7 @@ Per-wallet application is supported only by countries that require it (currently
 What happens with `-w`:
 * **Before 2025**: exactly the same computation (and output) as without `-w`.
 * **On January 1st, 2025 (the switch)**: the lots that are still unsold under universal application are assigned to the wallets that hold funds at that moment, as allowed by the [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) safe harbor. RP2 implements the "global allocation" method (section 5.02(2)(b)): you choose an accounting method to sort the unused lots and the order in which wallets are filled (`unused_basis_allocation_method` and `unused_basis_allocation_wallet_order` in the `per_wallet` section). The rule can be different for each coin (the safe harbor applies to each type of digital asset separately): append `.<asset>` to either field to override it for one coin, e.g. `unused_basis_allocation_wallet_order.BTC`. RP2 does not choose for you: if more than one wallet holds funds and the rule is missing, RP2 stops with an error. The Revenue Procedure requires the rule to be decided (and documented in your records) before January 1st, 2025: RP2 cannot verify this, so make sure the rule you configure is the one you chose then. The "specific unit allocation" method of Rev. Proc. 2024-28 is not supported yet.
-* **From 2025 on**: each wallet has its own lots. A sale or transfer that exceeds a wallet's balance is an error, even if other wallets have funds. Transfers between your wallets are not taxable: the transferred lots keep their cost basis (purchase fees included) and their original acquisition date, so the holding period continues and FIFO orders them by acquisition date: Treas. Reg. §1.1012-1(j)(1) and (j)(3)(i) state that "the date any units were transferred into the taxpayer's wallet is disregarded". If a transfer has a crypto fee (sent > received), the fee is paid with the first units selected by the accounting method and is treated according to `transfer_fee_treatment` (`disposal` or `basis_carryover`): US law doesn't settle this, so RP2 requires you to choose. Transactions with the same timestamp are processed in this order: acquisitions, then transfers, then sales (then by row), so funds received at a given instant can be sold at the same instant.
+* **From 2025 on**: each wallet has its own lots. A sale or transfer that exceeds a wallet's balance is an error, even if other wallets have funds. Transfers between your wallets are not taxable: the transferred lots keep their cost basis (purchase fees included) and their original acquisition date, so the holding period continues and FIFO orders them by acquisition date: [Treas. Reg. §1.1012-1(j)(1)](https://www.ecfr.gov/current/title-26/section-1.1012-1#p-1.1012-1(j)(1)) and (j)(3)(i) state that "the date any units were transferred into the taxpayer's wallet is disregarded". If a transfer has a crypto fee (sent > received), the fee is paid with the first units selected by the accounting method and is treated according to `transfer_fee_treatment` (`disposal` or `basis_carryover`): US law doesn't settle this, so RP2 requires you to choose. Transactions with the same timestamp are processed in this order: acquisitions, then transfers, then sales (then by row), so funds received at a given instant can be sold at the same instant.
 * The accounting method (`-m` or the `accounting_methods` section) applies to both sales and transfers in each year, so they are always consistent. Note that in the US, methods other than FIFO (HIFO, LIFO, LOFO) are a form of specific identification, which requires adequate identification of the units (e.g. a standing order): see [Notice 2025-7](https://www.irs.gov/pub/irs-drop/n-25-07.pdf), whose relief was extended through 2026 by [Notice 2026-20](https://www.irs.gov/pub/irs-drop/n-26-20.pdf).
 * The switch happens at the end of *your* day on December 31st, 2024 ([Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf), section 3.10), so set `timezone` to your local time zone. Note that Form 1099-DA doesn't specify a time zone for sale dates, so a broker's dates around midnight may differ from yours. The tax year of a transaction is the year of its timestamp, in the timestamp's own time zone. If the `timezone` of the `per_wallet` section puts a transaction on the other side of the switch (e.g. `2025-01-01T03:00:00+09:00` is still 2024 in New York), RP2 stops with an error rather than guessing.
 
@@ -124,7 +124,7 @@ Current limitations (see [issue #135](https://github.com/eprbell/rp2/issues/135)
 ### What Counts as a Wallet?
 In per-wallet application each wallet has its own lots, so how finely you split your holdings into wallets changes the result. In RP2 a wallet is an exchange/holder pair (the `exchange` and `holder` columns of the input file): each distinct pair has its own lots.
 
-The broker regulations define the terms (Treas. Reg. §1.6045-1(a)(25)):
+The broker regulations define the terms ([Treas. Reg. §1.6045-1(a)(25)](https://www.ecfr.gov/current/title-26/section-1.6045-1#p-1.6045-1(a)(25))):
 * a wallet "is a means of storing, electronically or otherwise, a user's private keys to digital assets held by or for the user";
 * a digital asset is held in a wallet if the wallet stores the private keys needed to transfer it. This includes assets at addresses generated by the wallet and in the wallet's sub-ledger accounts.
 
@@ -216,13 +216,15 @@ It's a humorous reference to Warren Buffett’s claim that Bitcoin is [“rat po
 Selling, swapping, donating, mining, staking, earning cryptocurrency are some common taxable events. For an up-to-date list in any given year, ask your tax professional. For additional information on taxable events read the <!-- markdown-link-check-disable -->[Cryptocurrency Tax FAQ](https://www.reddit.com/r/CryptoTax/comments/re6jal/cryptocurrency_tax_faq/)<!-- markdown-link-check-enable--> on Reddit and <!-- markdown-link-check-disable -->[CoinTracker's summary on crypto taxes](https://www.cointracker.io/blog/what-tax-forms-should-crypto-holders-file).<!-- markdown-link-check-enable-->
 
 ### How Does RP2 Determine Long-Term vs Short-Term Capital Gains?
-The IRS defines a long-term capital gain as one where the asset was held **more than one year** (IRS Publication 544). RP2 implements this as: the holding period (sale date minus purchase date, in days) must be **strictly greater than 365 days**. Consequently:
+In the US a capital gain is long-term if the asset was held **more than one year** ([IRC §1222](https://www.law.cornell.edu/uscode/text/26/1222)). [IRS Publication 544](https://www.irs.gov/publications/p544) explains how to count: the holding period starts the day after you acquired the asset and includes the day you disposed of it. So RP2 compares calendar dates: a sale is long-term only if its date is after the first anniversary of the acquisition date (the time of day doesn't matter). Consequently:
 
-* A lot bought on Jan 1, 2021 and sold on Jan 1, 2022 (exactly 365 days) is **short-term**.
-* A lot bought on Jan 1, 2021 and sold on Jan 2, 2022 (366 days) is **long-term**.
-* In a leap year (e.g. buy Jan 1, 2020, sell Jan 1, 2021) the difference is 366 days, which is long-term.
+* A lot bought on Jan 1, 2021 and sold on Jan 1, 2022 (exactly one year) is **short-term**.
+* A lot bought on Jan 1, 2021 and sold on Jan 2, 2022 is **long-term**.
+* Exactly one year is short-term even when it spans February 29th: a lot bought on Mar 1, 2023 and sold on Mar 1, 2024 (366 days) is **short-term**.
 
-The holding period threshold is configurable per country. For other countries the long-term threshold may differ; RP2 applies the same "strictly greater than" rule against each country's configured threshold.
+For transferred lots (per-wallet application) the acquisition date is the original one, so the holding period continues across transfers.
+
+Other countries count days instead: the holding period (in days) must be strictly greater than the country's long-term threshold.
 
 ### Can I Avoid Paying Crypto Taxes?
 No. The IRS has made it clear that [crypto taxes must be paid](https://www.irs.gov/newsroom/irs-reminds-taxpayers-to-report-virtual-currency-transactions). Various tax agencies in other jurisdictions have made similar statements.
@@ -316,7 +318,7 @@ Use an in-transaction (if receiving crypto) or out-transaction (if giving crypto
 ### How to Handle Gifts?
 Use an in-transaction (if receiving crypto) or out-transaction (if giving crypto) and mark the transaction type as GIFT. RP2 will collect gain/loss computations for all such transactions in a tab in the tax_report_us output. Also read question on [which tax forms to file](#which-crypto-tax-forms-to-file) and see [Important: Tax Treatment of Donations vs. Gifts](#important-tax-treatment-of-donations-vs-gifts) above. See the [input files](input_files.md) section of the documentation for format details.
 
-> **Important — receiving a gift (basis rules):** When you *receive* a gift of crypto, your cost basis under IRC §1015 depends primarily on whether the property was *appreciated* or *depreciated* at the time of the gift:
+> **Important — receiving a gift (basis rules):** When you *receive* a gift of crypto, your cost basis under [IRC §1015](https://www.law.cornell.edu/uscode/text/26/1015) depends primarily on whether the property was *appreciated* or *depreciated* at the time of the gift:
 >
 > * **Appreciated property — donor's basis ≤ FMV at gift date (the common case):** Your basis is the donor's original basis, used for both gain and loss on any future sale.
 > * **Depreciated property — donor's basis > FMV at gift date:** A dual-basis rule applies:
@@ -334,7 +336,7 @@ Use an in-transaction (if receiving crypto) or out-transaction (if giving crypto
 
 > **Important — RP2 limitation:** Inherited property receives two IRS benefits that RP2 cannot automatically apply:
 >
-> 1. **Stepped-up basis (IRC §1014):** The recipient's cost basis is the fair market value on the date of the decedent's death, not the decedent's original purchase price.
+> 1. **Stepped-up basis ([IRC §1014](https://www.law.cornell.edu/uscode/text/26/1014)):** The recipient's cost basis is the fair market value on the date of the decedent's death, not the decedent's original purchase price.
 > 2. **Automatic long-term holding period (IRC §1223(11)):** Inherited property is treated as held long-term regardless of how long it was actually held — even if you sell it the day you inherit it.
 >
 > **Workaround:** Enter the inherited crypto as a BUY-type in-transaction dated at the date of death, with `spot_price` set to the FMV at that date. This gives the correct stepped-up cost basis. However, RP2 will still compute the holding period from that date, so if you sell within 365 days of the inheritance date it will incorrectly classify the gain as short-term. You will need to manually override this classification on your tax return or consult your tax professional.
@@ -439,7 +441,7 @@ There is an ongoing debate on how to capture this scenario from a tax perspectiv
 
 ### How to Handle DeFi Liquidity Pool Deposits and Withdrawals?
 
-When you deposit tokens into a liquidity pool (e.g. Uniswap, Curve) you typically exchange your tokens for LP (liquidity provider) tokens — a receipt representing your share of the pool. When you withdraw, you give back the LP tokens and receive your underlying tokens plus any accumulated trading fees, though the amounts may differ from what you deposited due to *impermanent loss* (a reduction in value that occurs when the price ratio of the pooled tokens shifts away from the ratio at the time you deposited, compared to simply having held the tokens). The IRS has not issued specific guidance on LP tokens, but under the general property rules of IRS Notice 2014-21 each exchange is likely a taxable event.
+When you deposit tokens into a liquidity pool (e.g. Uniswap, Curve) you typically exchange your tokens for LP (liquidity provider) tokens — a receipt representing your share of the pool. When you withdraw, you give back the LP tokens and receive your underlying tokens plus any accumulated trading fees, though the amounts may differ from what you deposited due to *impermanent loss* (a reduction in value that occurs when the price ratio of the pooled tokens shifts away from the ratio at the time you deposited, compared to simply having held the tokens). The IRS has not issued specific guidance on LP tokens, but under the general property rules of IRS [Notice 2014-21](https://www.irs.gov/pub/irs-drop/n-14-21.pdf) each exchange is likely a taxable event.
 
 > **Important — RP2 has no native LP token model.** You must manually decompose each deposit and withdrawal into RP2's basic transaction types:
 >
