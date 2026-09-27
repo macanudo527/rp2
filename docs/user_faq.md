@@ -111,14 +111,14 @@ Per-wallet application is supported only by countries that require it (currently
 
 What happens with `-w`:
 * **Before 2025**: exactly the same computation (and output) as without `-w`.
-* **On January 1st, 2025 (the switch)**: the lots that are still unsold under universal application are assigned to the wallets that hold funds at that moment, as allowed by the [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) safe harbor. RP2 implements the "global allocation" method (section 5.02(2)(b)): you choose an accounting method to sort the unused lots and the order in which wallets are filled (`unused_basis_allocation_method` and `unused_basis_allocation_wallet_order` in the `per_wallet` section). The rule can be different for each coin (the safe harbor applies to each type of digital asset separately): append `.<asset>` to either field to override it for one coin, e.g. `unused_basis_allocation_wallet_order.BTC`. RP2 does not choose for you: if more than one wallet holds funds and the rule is missing, RP2 stops with an error. The Revenue Procedure requires the rule to be decided (and documented in your records) before January 1st, 2025: RP2 cannot verify this, so make sure the rule you configure is the one you chose then. The "specific unit allocation" method of Rev. Proc. 2024-28 is not supported yet.
-* **From 2025 on**: each wallet has its own lots. A sale or transfer that exceeds a wallet's balance is an error, even if other wallets have funds. Transfers between your wallets are not taxable: the transferred lots keep their cost basis (purchase fees included) and their original acquisition date, so the holding period continues and FIFO orders them by acquisition date: [Treas. Reg. §1.1012-1(j)(1)](https://www.ecfr.gov/current/title-26/section-1.1012-1#p-1.1012-1(j)(1)) and (j)(3)(i) state that "the date any units were transferred into the taxpayer's wallet is disregarded". If a transfer has a crypto fee (sent > received), the fee is paid with the first units selected by the accounting method and is treated according to `transfer_fee_treatment` (`disposal` or `basis_carryover`): US law doesn't settle this, so RP2 requires you to choose. Transactions with the same timestamp are processed in this order: acquisitions, then transfers, then sales (then by row), so funds received at a given instant can be sold at the same instant.
+* **On January 1st, 2025 (the switch)**: the lots that are still unsold under universal application are assigned to the wallets that hold funds at that moment, as allowed by the [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) safe harbor. RP2 implements the "global allocation" method ([section 5.02(2)(b)](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf#page=12)): you choose an accounting method to sort the unused lots and the order in which wallets are filled (`unused_basis_allocation_method` and `unused_basis_allocation_wallet_order` in the `per_wallet` section). The rule can be different for each coin (the safe harbor applies to each type of digital asset separately): append `.<asset>` to either field to override it for one coin, e.g. `unused_basis_allocation_wallet_order.BTC`. RP2 does not choose for you: if more than one wallet holds funds and the rule is missing, RP2 stops with an error. The Revenue Procedure requires the rule to be decided (and documented in your records) before January 1st, 2025: RP2 cannot verify this, so make sure the rule you configure is the one you chose then. The "specific unit allocation" method of [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) is not supported yet.
+* **From 2025 on**: each wallet has its own lots. A sale or transfer that exceeds a wallet's balance is an error, even if other wallets have funds. Transfers between your wallets are not taxable: the transferred lots keep their cost basis (purchase fees included) and their original acquisition date, so the holding period continues and FIFO orders them by acquisition date: [Treas. Reg. §1.1012-1(j)(1)](https://www.ecfr.gov/current/title-26/section-1.1012-1#p-1.1012-1(j)(1)) and [(j)(3)(i)](https://www.ecfr.gov/current/title-26/section-1.1012-1#p-1.1012-1(j)(3)(i)) state that "the date any units were transferred into the taxpayer's wallet is disregarded". If a transfer has a crypto fee (sent > received), the fee is paid with the first units selected by the accounting method and is treated according to `transfer_fee_treatment` (`disposal` or `basis_carryover`): US law doesn't settle this, so RP2 requires you to choose. Transactions with the same timestamp are processed in this order: acquisitions, then transfers, then sales (then by row), so funds received at a given instant can be sold at the same instant.
 * The accounting method (`-m` or the `accounting_methods` section) applies to both sales and transfers in each year, so they are always consistent. Note that in the US, methods other than FIFO (HIFO, LIFO, LOFO) are a form of specific identification, which requires adequate identification of the units (e.g. a standing order): see [Notice 2025-7](https://www.irs.gov/pub/irs-drop/n-25-07.pdf), whose relief was extended through 2026 by [Notice 2026-20](https://www.irs.gov/pub/irs-drop/n-26-20.pdf).
-* The switch happens at the end of *your* day on December 31st, 2024 ([Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf), section 3.10), so set `timezone` to your local time zone. Note that Form 1099-DA doesn't specify a time zone for sale dates, so a broker's dates around midnight may differ from yours. The tax year of a transaction is the year of its timestamp, in the timestamp's own time zone. If the `timezone` of the `per_wallet` section puts a transaction on the other side of the switch (e.g. `2025-01-01T03:00:00+09:00` is still 2024 in New York), RP2 stops with an error rather than guessing.
+* The switch happens at the end of *your* day on December 31st, 2024 ([Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf), [section 3.10](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf#page=8)), so set `timezone` to your local time zone. Note that Form 1099-DA doesn't specify a time zone for sale dates, so a broker's dates around midnight may differ from yours. The tax year of a transaction is the year of its timestamp, in the timestamp's own time zone. If the `timezone` of the `per_wallet` section puts a transaction on the other side of the switch (e.g. `2025-01-01T03:00:00+09:00` is still 2024 in New York), RP2 stops with an error rather than guessing.
 
 Current limitations (see [issue #135](https://github.com/eprbell/rp2/issues/135)):
 * reports don't yet show the wallet of each lot and disposal, nor distinguish covered from noncovered assets, which are needed to reconcile with Form 1099-DA and to fill Form 8949 boxes;
-* the specific unit allocation of Rev. Proc. 2024-28 is not supported;
+* the specific unit allocation of [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) is not supported;
 * transfers between different holders are treated as transfers between wallets (carryover basis), not as gifts.
 
 ### What Counts as a Wallet?
@@ -258,12 +258,12 @@ If the both the source and destination accounts belong to the same owner (or to 
 ### If I Transfer Cryptocurrency Between Two Accounts I Own, Is the Fee Taxable?
 Such fees affect which purchase lots are matched against which sales, so RP2 keeps track of them (in the "Investment Expenses" tab of the tax_report_us output). Ask your tax professional about how to handle this tab in any given year.
 
-> **Note:** When an intra-transaction has a non-zero crypto fee (i.e. `crypto_sent > crypto_received`), RP2 treats the fee as a taxable event and generates a gain/loss entry for it. This follows IRS Notice 2014-21 (property disposed to pay a fee triggers a gain/loss) and IRS Digital Assets FAQ Q97 (gain/loss recognised on digital assets used to pay transaction fees — fair market value (FMV) at disposal minus your cost basis (the price you originally paid for the crypto)). If the fee was zero, no taxable event is generated. This behavior is intentional but easy to miss: moving coins between your own wallets will produce a gain/loss line in your tax report whenever a crypto fee is charged.
+> **Note:** When an intra-transaction has a non-zero crypto fee (i.e. `crypto_sent > crypto_received`), RP2 treats the fee as a taxable event and generates a gain/loss entry for it. This follows IRS [Notice 2014-21](https://www.irs.gov/pub/irs-drop/n-14-21.pdf) (property disposed to pay a fee triggers a gain/loss) and IRS Digital Assets FAQ Q97 (gain/loss recognised on digital assets used to pay transaction fees — fair market value (FMV) at disposal minus your cost basis (the price you originally paid for the crypto)). If the fee was zero, no taxable event is generated. This behavior is intentional but easy to miss: moving coins between your own wallets will produce a gain/loss line in your tax report whenever a crypto fee is charged.
 >
 > **References:**
 > * IRS Digital Assets FAQ Q81 (wallet-to-wallet transfers are non-taxable except for fees paid in crypto): https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-digital-asset-transactions
 > * IRS Digital Assets FAQ Q97 (gain/loss on crypto used to pay transaction fees): https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-digital-asset-transactions
-> * IRS Notice 2014-21 (crypto is property; property disposal rules apply to fees): https://www.irs.gov/pub/irs-drop/n-14-21.pdf
+> * IRS [Notice 2014-21](https://www.irs.gov/pub/irs-drop/n-14-21.pdf) (crypto is property; property disposal rules apply to fees): https://www.irs.gov/pub/irs-drop/n-14-21.pdf
 
 ### How to Represent Fiat Vs Crypto Transaction Fees?
 Here are the possible scenarios for in and out-transaction fees (intra-transactions fees are implicitly defined as `crypto_sent` - `crypto_received`):
@@ -300,7 +300,7 @@ Use an in-transaction and mark the transaction type as AIRDROP. RP2 will collect
 > **Tax treatment:** Airdropped tokens are ordinary income at their fair market value on the date you receive them (i.e. gain dominion and control over them) — not a capital gain. The FMV at receipt becomes your cost basis for future disposals. Enter the spot price at the moment you could first access the tokens, not the date the airdrop was announced.
 >
 > **References:**
-> * Revenue Ruling 2019-24 (Rev. Rul. 2019-24) (airdrop income recognised at FMV when dominion and control obtained): https://www.irs.gov/pub/irs-drop/rr-19-24.pdf
+> * [Revenue Ruling 2019-24](https://www.irs.gov/pub/irs-drop/rr-19-24.pdf) ([Rev. Rul. 2019-24](https://www.irs.gov/pub/irs-drop/rr-19-24.pdf)) (airdrop income recognised at FMV when dominion and control obtained): https://www.irs.gov/pub/irs-drop/rr-19-24.pdf
 > * IRS Digital Assets FAQ (airdrops treated as ordinary income, FMV at receipt is basis): https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-digital-asset-transactions
 
 ### How to Handle Donations?
@@ -329,29 +329,29 @@ Use an in-transaction (if receiving crypto) or out-transaction (if giving crypto
 > RP2 has no built-in model for this: there is no way to tag an in-transaction as "received as gift" so that the correct dual-basis rule applies automatically. **Workaround:** Record the in-transaction with the donor's original cost basis as the `spot_price` (converted to per-unit). Keep a note of the FMV at the gift date. When you later sell, manually determine which basis rule applies and adjust if necessary before filing — or consult a tax professional.
 >
 > **References:**
-> * IRC §1015 (transferred basis for gifts): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1015&edition=prelim
-> * 26 CFR §1.1015-1 (IRS split-basis rule with worked example): https://www.law.cornell.edu/cfr/text/26/1.1015-1
+> * [IRC §1015](https://www.law.cornell.edu/uscode/text/26/1015) (transferred basis for gifts): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1015&edition=prelim
+> * [26 CFR §1.1015-1](https://www.ecfr.gov/current/title-26/section-1.1015-1) (IRS split-basis rule with worked example): https://www.law.cornell.edu/cfr/text/26/1.1015-1
 
 ### How to Handle Inherited Crypto?
 
 > **Important — RP2 limitation:** Inherited property receives two IRS benefits that RP2 cannot automatically apply:
 >
 > 1. **Stepped-up basis ([IRC §1014](https://www.law.cornell.edu/uscode/text/26/1014)):** The recipient's cost basis is the fair market value on the date of the decedent's death, not the decedent's original purchase price.
-> 2. **Automatic long-term holding period (IRC §1223(11)):** Inherited property is treated as held long-term regardless of how long it was actually held — even if you sell it the day you inherit it.
+> 2. **Automatic long-term holding period ([IRC §1223(11)](https://www.law.cornell.edu/uscode/text/26/1223)):** Inherited property is treated as held long-term regardless of how long it was actually held — even if you sell it the day you inherit it.
 >
 > **Workaround:** Enter the inherited crypto as a BUY-type in-transaction dated at the date of death, with `spot_price` set to the FMV at that date. This gives the correct stepped-up cost basis. However, RP2 will still compute the holding period from that date, so if you sell within 365 days of the inheritance date it will incorrectly classify the gain as short-term. You will need to manually override this classification on your tax return or consult your tax professional.
 >
-> **Reference:** IRC §1014 (stepped-up basis): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1014&edition=prelim — IRC §1223(11) (automatic LTCG holding period for inherited property): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1223&edition=prelim
+> **Reference:** [IRC §1014](https://www.law.cornell.edu/uscode/text/26/1014) (stepped-up basis): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1014&edition=prelim — [IRC §1223(11)](https://www.law.cornell.edu/uscode/text/26/1223) (automatic LTCG holding period for inherited property): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1223&edition=prelim
 
 ### How to Handle Hard Forks?
 Use an in-transaction and mark the transaction type as HARDFORK. RP2 will collect gain/loss computations for all such transactions in a tab in the tax_report_us output. Also read question on [which tax forms to file](#which-crypto-tax-forms-to-file) and see the [input files](input_files.md) section of the documentation for format details.
 
 > **Tax treatment:** A hard fork that creates a new asset generates ordinary income equal to the fair market value of the new tokens at the time you receive them. A soft fork (no new asset) and a hard fork that does not produce new tokens for you are both non-events for tax purposes. RP2 models the taxable scenario: enter a HARDFORK in-transaction only when you actually receive new tokens.
 >
-> **Important — "dominion and control" timing:** Under Rev. Rul. 2019-24, hard fork income is recognized only when the taxpayer actually has the ability to claim the new coins (i.e. gains "dominion and control"), not necessarily at the moment the fork occurs at the blockchain level. If the coins are on an exchange that does not immediately support the new chain, income should be recognized when the exchange distributes the coins or you can otherwise access them — not at the exact moment the fork occurred on the blockchain. Make sure the timestamp of your HARDFORK in-transaction reflects the date you actually received access to the coins.
+> **Important — "dominion and control" timing:** Under [Rev. Rul. 2019-24](https://www.irs.gov/pub/irs-drop/rr-19-24.pdf), hard fork income is recognized only when the taxpayer actually has the ability to claim the new coins (i.e. gains "dominion and control"), not necessarily at the moment the fork occurs at the blockchain level. If the coins are on an exchange that does not immediately support the new chain, income should be recognized when the exchange distributes the coins or you can otherwise access them — not at the exact moment the fork occurred on the blockchain. Make sure the timestamp of your HARDFORK in-transaction reflects the date you actually received access to the coins.
 >
 > **References:**
-> * Rev. Rul. 2019-24 (hard fork and airdrop income recognised at FMV when dominion and control obtained): https://www.irs.gov/pub/irs-drop/rr-19-24.pdf
+> * [Rev. Rul. 2019-24](https://www.irs.gov/pub/irs-drop/rr-19-24.pdf) (hard fork and airdrop income recognised at FMV when dominion and control obtained): https://www.irs.gov/pub/irs-drop/rr-19-24.pdf
 > * IRS Digital Assets FAQ Q103-Q107 (soft forks = no income; hard fork without new asset = no income; hard fork with new asset = ordinary income at FMV; basis = FMV included in income): https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-digital-asset-transactions
 
 ### How to Handle Miscellaneous Crypto Income?
@@ -365,14 +365,14 @@ Use an in-transaction and mark the transaction type as MINING. RP2 will collect 
 
 > **Tax treatment:** Mined coins are ordinary income at their fair market value on the date received. The FMV at receipt becomes your cost basis for future disposals. If you mine as a business (self-employed), the income is also subject to self-employment tax.
 >
-> **Reference:** IRS Notice 2014-21 Q8 (mining rewards are gross income at FMV when received): https://www.irs.gov/pub/irs-drop/n-14-21.pdf
+> **Reference:** IRS [Notice 2014-21](https://www.irs.gov/pub/irs-drop/n-14-21.pdf) Q8 (mining rewards are gross income at FMV when received): https://www.irs.gov/pub/irs-drop/n-14-21.pdf
 
 ### How to Handle Income from Staking?
 Use an in-transaction and mark the transaction type as STAKING. RP2 will collect gain/loss computations for all such transactions in a tab in the tax_report_us output. Also read question on [which tax forms to file](#which-crypto-tax-forms-to-file) and see the [input files](input_files.md) section of the documentation for format details.
 
 > **Tax treatment:** Staking rewards are ordinary income at their fair market value on the date you first have access to them and can freely transfer or sell them. The FMV at receipt is your cost basis for future disposals. This is true even if the rewards are automatically re-staked on your behalf.
 >
-> **Reference:** Revenue Ruling 2023-14 (Rev. Rul. 2023-14) (staking rewards are income at FMV when received): https://www.irs.gov/pub/irs-drop/rr-23-14.pdf
+> **Reference:** [Revenue Ruling 2023-14](https://www.irs.gov/pub/irs-drop/rr-23-14.pdf) ([Rev. Rul. 2023-14](https://www.irs.gov/pub/irs-drop/rr-23-14.pdf)) (staking rewards are income at FMV when received): https://www.irs.gov/pub/irs-drop/rr-23-14.pdf
 
 ### How to Handle Locked or Delayed Staking Rewards?
 RP2 recognizes staking income at the timestamp of the in-transaction, valued at its spot price: so the timestamp you enter decides when the income is taxed.
@@ -404,16 +404,16 @@ This applies to governance and incentive tokens (e.g. COMP) as well as other cry
 
 RP2 has a LOST out-transaction type for crypto that is lost or stolen. RP2 computes a gain/loss figure for LOST transactions the same way it does for SELL, and includes the result in the tax output.
 
-> **Warning — TCJA 2018 deductibility limitation:** The Tax Cuts and Jobs Act of 2017 severely restricted personal casualty and theft loss deductions for tax years 2018–2025 (IRC §165(h)(5)). Under this law:
+> **Warning — TCJA 2018 deductibility limitation:** The Tax Cuts and Jobs Act of 2017 severely restricted personal casualty and theft loss deductions for tax years 2018–2025 ([IRC §165(h)(5)](https://www.law.cornell.edu/uscode/text/26/165)). Under this law:
 >
 > * **Personal casualty/theft losses are generally NOT deductible** unless they arise from a federally declared disaster.
 > * Losing crypto (lost private keys, forgotten passwords, defunct exchanges) and having crypto stolen are both affected — you almost certainly cannot deduct these losses on a personal return for tax years 2018–2025.
-> * **Business theft losses (IRC §165(c)(1)) remain deductible**, so if the crypto was held as part of a business, different rules apply.
+> * **Business theft losses ([IRC §165(c)(1)](https://www.law.cornell.edu/uscode/text/26/165)) remain deductible**, so if the crypto was held as part of a business, different rules apply.
 >
 > **Practical guidance:** The loss figure RP2 computes for LOST transactions may be useful for record-keeping and in case tax law changes, but do not assume it will automatically reduce your tax liability. Consult a tax professional before claiming any loss deduction for lost or stolen crypto.
 >
 > **References:**
-> * IRC §165(h)(5) (TCJA personal casualty loss limitation): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section165&edition=prelim
+> * [IRC §165(h)(5)](https://www.law.cornell.edu/uscode/text/26/165) (TCJA personal casualty loss limitation): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section165&edition=prelim
 > * IRS Digital Assets FAQ Q64 (stolen/lost digital assets): https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-digital-asset-transactions
 
 ### How to Handle Fee-only DeFi Transactions?
@@ -477,7 +477,7 @@ Margin trading generates normal capital gains and losses, so it can be recorded 
 ### How to Handle Futures and Options?
 Calling for help on this question: if you have insight on this please open an issue or a PR.
 
-> **Important — Section 1256 contracts (regulated crypto futures):** Bitcoin and Ether futures traded on regulated exchanges such as the Chicago Mercantile Exchange (CME) may qualify as Section 1256 contracts under IRC §1256. Section 1256 contracts receive special tax treatment that RP2 **does not currently implement**:
+> **Important — Section 1256 contracts (regulated crypto futures):** Bitcoin and Ether futures traded on regulated exchanges such as the Chicago Mercantile Exchange (CME) may qualify as Section 1256 contracts under [IRC §1256](https://www.law.cornell.edu/uscode/text/26/1256). Section 1256 contracts receive special tax treatment that RP2 **does not currently implement**:
 >
 > * **Mark-to-market at year-end:** All open positions (futures contracts you have not yet settled or closed) are treated as if you sold them at their fair market value on December 31, and any resulting gain or loss is taxable for that year — even though you never actually sold.
 > * **60/40 split:** Regardless of actual holding period, 60% of the net gain or loss is treated as long-term capital gain/loss and 40% as short-term.
@@ -485,11 +485,11 @@ Calling for help on this question: if you have insight on this please open an is
 >
 > If you trade regulated crypto futures, RP2's output will not correctly reflect these rules. Consult a tax professional and file Form 6781 (Gains and Losses From Section 1256 Contracts and Straddles) separately.
 >
-> **Reference:** IRC §1256: https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1256&edition=prelim
+> **Reference:** [IRC §1256](https://www.law.cornell.edu/uscode/text/26/1256): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1256&edition=prelim
 
 ### Important: Wash Sale Rules Do Not Currently Apply to Crypto
 
-Under IRC §1091, the wash sale rule prevents you from claiming a capital loss if you buy a "substantially identical" security within 30 days before or after selling it at a loss. This rule applies to stocks and securities but **does not currently apply to cryptocurrency** because the IRS treats crypto as property, not a security.
+Under [IRC §1091](https://www.law.cornell.edu/uscode/text/26/1091), the wash sale rule prevents you from claiming a capital loss if you buy a "substantially identical" security within 30 days before or after selling it at a loss. This rule applies to stocks and securities but **does not currently apply to cryptocurrency** because the IRS treats crypto as property, not a security.
 
 This means:
 * You can sell crypto at a loss to realize a tax deduction, then immediately repurchase the same crypto — the loss is not disallowed.
@@ -499,4 +499,4 @@ This means:
 >
 > **Stay current:** Check with a tax professional each year and watch for legislative changes, especially if you engage in tax-loss harvesting.
 >
-> **Reference:** IRC §1091 (wash sale rule, currently applies only to stock and securities): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1091&edition=prelim
+> **Reference:** [IRC §1091](https://www.law.cornell.edu/uscode/text/26/1091) (wash sale rule, currently applies only to stock and securities): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1091&edition=prelim

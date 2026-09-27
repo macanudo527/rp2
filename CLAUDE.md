@@ -128,7 +128,7 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 | `PerWalletTransactions` | `transfer_analyzer.py` | Lots (with per-method heaps), actual amounts and out/intra sets of one wallet during transfer analysis |
 | `TransferAnalyzer` | `transfer_analyzer.py` | Per-wallet engine: decomposes `InputData` into per-wallet `InputData` and pairs taxable events with lots of their wallet (`analyze_and_pair()`) |
 | `AcquisitionDateFifo` | `acquisition_date_fifo.py` | Per-wallet FIFO: orders lots by original acquisition date (`cost_basis_timestamp`), not arrival date |
-| `UnusedBasisAllocator` | `unused_basis_allocator.py` | Rev. Proc. 2024-28 global allocation of unused lots to wallets at the per-wallet switch |
+| `UnusedBasisAllocator` | `unused_basis_allocator.py` | [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) global allocation of unused lots to wallets at the per-wallet switch |
 | `PerWalletConfiguration` | `per_wallet_configuration.py` | `[per_wallet]` config section: timezone, transfer fee treatment, unused basis allocation rule (default plus per-asset overrides, `<field>.<asset>`) |
 | `TransferFeeTreatment` | `transfer_fee_treatment.py` | `DISPOSAL` or `BASIS_CARRYOVER` for crypto fees on transfers between own wallets (unsettled US law: user must choose) |
 | `GlobalAllocator` | `global_allocation.py` | Earlier, unwired prototype of global allocation (superseded by `UnusedBasisAllocator`) |
@@ -146,12 +146,12 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 - `tests/rp2_test_output.py` provides helpers for comparing actual vs. expected output.
 - Output-diff tests (`test_ods_output_diff_*.py`) are per-country and catch report formatting regressions.
 - `tests/test_gain_loss.py` contains unit tests that verify IRS-rule-level correctness. Each test cites the governing IRS authority:
-  - `test_ltcg_boundary` — IRS FAQ Q50 / IRC §1222 (holding period >365 days for LTCG)
-  - `test_earn_type_income_recognition` — earn types (HARDFORK, AIRDROP, MINING, STAKING, WAGES, INCOME) produce ordinary income at FMV with no cost basis (Rev. Rul. 2019-24, Notice 2014-21, Rev. Rul. 2023-14, FAQ Q57-61, IRC §61)
-  - `test_donate_gift_disposal_gain_loss` — DONATE/GIFT disposals compute gain/loss identically to SELL (IRS FAQ Q75-78, Notice 2014-21)
+  - `test_ltcg_boundary` — IRS FAQ Q50 / [IRC §1222](https://www.law.cornell.edu/uscode/text/26/1222) (holding period >365 days for LTCG)
+  - `test_earn_type_income_recognition` — earn types (HARDFORK, AIRDROP, MINING, STAKING, WAGES, INCOME) produce ordinary income at FMV with no cost basis ([Rev. Rul. 2019-24](https://www.irs.gov/pub/irs-drop/rr-19-24.pdf), [Notice 2014-21](https://www.irs.gov/pub/irs-drop/n-14-21.pdf), [Rev. Rul. 2023-14](https://www.irs.gov/pub/irs-drop/rr-23-14.pdf), FAQ Q57-61, [IRC §61](https://www.law.cornell.edu/uscode/text/26/61))
+  - `test_donate_gift_disposal_gain_loss` — DONATE/GIFT disposals compute gain/loss identically to SELL (IRS FAQ Q75-78, [Notice 2014-21](https://www.irs.gov/pub/irs-drop/n-14-21.pdf))
   - `test_holding_period_resets_after_exchange` — received asset's holding period starts fresh on exchange date (IRS FAQ Q74)
-  - `test_fee_out_transaction_gain_loss` — FEE-typed disposal recognises gain/loss on crypto used to pay fees (IRS FAQ Q97, Notice 2014-21)
-  - `test_good_non_interest_gain_loss` — intra-transaction crypto fee is a taxable disposal (IRS FAQ Q81/Q97, Notice 2014-21)
+  - `test_fee_out_transaction_gain_loss` — FEE-typed disposal recognises gain/loss on crypto used to pay fees (IRS FAQ Q97, [Notice 2014-21](https://www.irs.gov/pub/irs-drop/n-14-21.pdf))
+  - `test_good_non_interest_gain_loss` — intra-transaction crypto fee is a taxable disposal (IRS FAQ Q81/Q97, [Notice 2014-21](https://www.irs.gov/pub/irs-drop/n-14-21.pdf))
 
 #### Per-Wallet and Global Allocation Tests (new)
 
@@ -171,7 +171,7 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 These are intentional design decisions or known constraints to keep in mind when modifying the engine.
 
 ### LTCG Holding Period (fixed)
-`GainLoss.is_long_term_capital_gains()` delegates to `AbstractCountry.is_long_term_capital_gain(acquisition, disposal)`. The default compares whole days with `get_long_term_capital_gain_period()` (strictly greater). The US overrides it with the calendar rule of IRC §1222 / IRS Publication 544: counting starts the day after acquisition and includes the day of disposal, so a sale is long-term only if its date is after the first anniversary of the acquisition date. Exactly one year is short-term even when it spans February 29th (366 days); time of day doesn't matter.
+`GainLoss.is_long_term_capital_gains()` delegates to `AbstractCountry.is_long_term_capital_gain(acquisition, disposal)`. The default compares whole days with `get_long_term_capital_gain_period()` (strictly greater). The US overrides it with the calendar rule of [IRC §1222](https://www.law.cornell.edu/uscode/text/26/1222) / [IRS Publication 544](https://www.irs.gov/publications/p544): counting starts the day after acquisition and includes the day of disposal, so a sale is long-term only if its date is after the first anniversary of the acquisition date. Exactly one year is short-term even when it spans February 29th (366 days); time of day doesn't matter.
 
 ### DONATE and GIFT Tax Treatment
 RP2 computes gain/loss for `DONATE` and `GIFT` out-transactions using the same formula as `SELL`. This is intentional — the output tabs give tax professionals the data they need. However, the actual tax treatment differs from a sale:
@@ -181,7 +181,7 @@ RP2 computes gain/loss for `DONATE` and `GIFT` out-transactions using the same f
 Do not change `OutTransaction.is_taxable()` to return `False` for these types without also updating all downstream report generators to handle them differently.
 
 ### IntraTransaction Fees Are Taxable Events
-When `crypto_sent > crypto_received`, `IntraTransaction.is_taxable()` returns `True` and the fee generates a gain/loss entry. This is correct under IRS Notice 2014-21 but surprises users who expect wallet-to-wallet transfers to be tax-free. See `user_faq.md` for the user-facing explanation.
+When `crypto_sent > crypto_received`, `IntraTransaction.is_taxable()` returns `True` and the fee generates a gain/loss entry. This is correct under IRS [Notice 2014-21](https://www.irs.gov/pub/irs-drop/n-14-21.pdf) but surprises users who expect wallet-to-wallet transfers to be tax-free. See `user_faq.md` for the user-facing explanation.
 
 ### Slashing / Negative Staking Income
 RP2 has no dedicated slash transaction type. Involuntary stake losses (slashing) must be entered as an `OutTransaction` with `transaction_type = STAKING`. In-transaction amounts must be positive — do not enter negative `crypto_in` values.
@@ -205,7 +205,7 @@ All accounting methods (FIFO, LIFO, HIFO, LOFO) operate on a single global pool 
 `TransferAnalyzer` raises `RP2ValueError` ("Insufficient balance on ...") if an `OutTransaction` or `IntraTransaction` needs more funds than its wallet holds at that moment, even if other wallets have funds. The analyzer processes everything chronologically in a single pass.
 
 ### GlobalAllocator Is Superseded
-`global_allocation.py` is an earlier prototype that is not wired into the CLI (TODOs: fee splitting, spot price). The per-wallet pipeline uses `UnusedBasisAllocator`, which allocates the lots left unused by universal application (the Rev. Proc. 2024-28 definition of unused basis) rather than lots traced per wallet.
+`global_allocation.py` is an earlier prototype that is not wired into the CLI (TODOs: fee splitting, spot price). The per-wallet pipeline uses `UnusedBasisAllocator`, which allocates the lots left unused by universal application (the [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) definition of unused basis) rather than lots traced per wallet.
 
 ### Japan and Other Universal-Only Countries
 `get_per_wallet_application_start_year()` returns None by default: `-w` is rejected and `compute_tax_per_wallet()` raises. Note that the JP plugin only offers FIFO, although Japanese law prescribes 総平均法 (default) or 移動平均法 for individuals (docs/supported_countries.md claims total average): this is a known, pre-existing gap.
