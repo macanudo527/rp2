@@ -13,6 +13,7 @@
 # limitations under the License.
 
 
+from datetime import datetime
 from typing import List, Optional, Set
 
 from pycountry import countries, currencies
@@ -75,6 +76,11 @@ class AbstractCountry:
     # Measured in days
     def get_long_term_capital_gain_period(self) -> int:
         raise NotImplementedError("Abstract function")
+
+    # True if an asset acquired at acquisition_timestamp and disposed of at disposal_timestamp was held long enough to be long-term.
+    # The default counts whole days; countries whose law measures the holding period by calendar dates override it.
+    def is_long_term_capital_gain(self, acquisition_timestamp: datetime, disposal_timestamp: datetime) -> bool:
+        return (disposal_timestamp - acquisition_timestamp).days > self.get_long_term_capital_gain_period()
 
     # Default accounting method to use if the user doesn't specify one on the command line
     def get_default_accounting_method(self) -> str:

@@ -264,14 +264,19 @@ class TestGainLoss(unittest.TestCase):
 
     def test_ltcg_boundary(self) -> None:
         """
-        Capital gains are long-term only when the holding period is MORE THAN one year
-        (strictly > 365 days). A hold of exactly 365 days is still short-term.
+        Capital gains are long-term only when the holding period is MORE THAN one year. The holding period is measured
+        in calendar dates (not in days): counting starts the day after acquisition and includes the day of disposal, so
+        a sale is long-term only if its date is after the first anniversary of the acquisition date. Across February 29th
+        a hold of exactly one year is 366 days and is still short-term.
 
         IRS rules:
           IRS Digital Assets FAQ Q50 (holding period for LTCG on digital assets):
             https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-digital-asset-transactions
           IRC §1222 (defines "long-term capital gain" as asset held "more than 1 year"):
             https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1222
+          IRS Publication 544, "Holding period" ("start counting on the day following the day you acquired the property.
+          The day you disposed of the property is part of your holding period"):
+            https://www.irs.gov/publications/p544
         """
         # Exactly 365 days must be short-term (IRS: "more than one year" means strictly > 365 days).
         buy_365 = InTransaction(
@@ -309,7 +314,7 @@ class TestGainLoss(unittest.TestCase):
             RP2Decimal("0"),
             row=52,
         )
-        # Leap year boundary: 2020 has 366 days, so Jan 1 → Jan 1 next year is 366 days.
+        # Leap year boundary: 2020 has 366 days, so Jan 1 → Jan 1 next year is 366 days, but it's exactly one year.
         buy_leap = InTransaction(
             self._configuration,
             "2020-01-01T00:00:00Z",
@@ -340,7 +345,27 @@ class TestGainLoss(unittest.TestCase):
 
         self.assertFalse(gl_365.is_long_term_capital_gains(), "365-day holding should be short-term (IRS: more than 1 year required)")
         self.assertTrue(gl_366.is_long_term_capital_gains(), "366-day holding should be long-term")
-        self.assertTrue(gl_leap.is_long_term_capital_gains(), "366-day leap-year boundary should be long-term")
+        self.assertFalse(gl_leap.is_long_term_capital_gains(), "Exactly one year (366 days across February 29th) should be short-term")
+
+        def is_long_term(bought: str, sold: str) -> bool:
+            buy = InTransaction(self._configuration, bought, "B1", "Coinbase Pro", "Bob", "BUY", RP2Decimal("10000"), RP2Decimal("1.0"), row=55)
+            sell = OutTransaction(
+                self._configuration, sold, "B1", "Coinbase Pro", "Bob", "SELL", RP2Decimal("12000"), RP2Decimal("1.0"), RP2Decimal("0"), row=56
+            )
+            return GainLoss(self._configuration, RP2Decimal("1.0"), sell, buy).is_long_term_capital_gains()
+
+        # Publication 544 example: bought June 17, 2024; sold June 17, 2025 is not longer than 1 year, sold June 19, 2025 is.
+        self.assertFalse(is_long_term("2024-06-17T12:00:00Z", "2025-06-17T12:00:00Z"))
+        self.assertTrue(is_long_term("2024-06-17T12:00:00Z", "2025-06-18T12:00:00Z"))
+        self.assertTrue(is_long_term("2024-06-17T12:00:00Z", "2025-06-19T12:00:00Z"))
+        # Across February 29th: 2023-03-01 -> 2024-03-01 is 366 days but exactly one year.
+        self.assertFalse(is_long_term("2023-03-01T12:00:00Z", "2024-03-01T12:00:00Z"))
+        self.assertTrue(is_long_term("2023-03-01T12:00:00Z", "2024-03-02T12:00:00Z"))
+        # Acquired on February 29th: the anniversary is February 28th, so long-term from March 1st.
+        self.assertFalse(is_long_term("2024-02-29T12:00:00Z", "2025-02-28T12:00:00Z"))
+        self.assertTrue(is_long_term("2024-02-29T12:00:00Z", "2025-03-01T12:00:00Z"))
+        # Time of day doesn't matter: the day after the anniversary is long-term even if less than 365 * 24 hours have passed.
+        self.assertTrue(is_long_term("2024-03-01T23:00:00Z", "2025-03-02T01:00:00Z"))
 
     def test_earn_type_income_recognition(self) -> None:
         """

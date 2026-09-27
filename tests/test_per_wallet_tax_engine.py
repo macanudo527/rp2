@@ -335,7 +335,7 @@ class TestPerWalletTaxEngine(unittest.TestCase):
                 ],
             ),
             _Test(
-                description="Holding period is preserved through transfers: 366 days is long term",
+                description="Holding period is preserved through transfers: sold the day after the first anniversary is long term",
                 transactions=[
                     _In("i1", "2024-03-01T00:00:00+00:00", "Coinbase", "Buy", "100", "1"),
                     _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "1", "1"),
@@ -344,7 +344,7 @@ class TestPerWalletTaxEngine(unittest.TestCase):
                 want=[_GainLoss("o1", "i1", "1", "100", "100", True)],
             ),
             _Test(
-                description="Holding period is preserved through transfers: 365 days is short term",
+                description="Holding period is preserved through transfers: sold on the first anniversary is short term",
                 transactions=[
                     _In("i1", "2024-03-01T00:00:00+00:00", "Coinbase", "Buy", "100", "1"),
                     _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "1", "1"),

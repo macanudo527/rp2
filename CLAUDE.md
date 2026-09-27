@@ -171,7 +171,7 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 These are intentional design decisions or known constraints to keep in mind when modifying the engine.
 
 ### LTCG Holding Period (fixed)
-`gain_loss.py:is_long_term_capital_gains()` uses `>` (strictly greater than) against `country.get_long_term_capital_gain_period()`. For the US, the threshold is 365, so a lot must be held for **at least 366 days** to qualify as long-term. This correctly implements the IRS "more than one year" rule — exactly 365 days is short-term. Previously the code used `>=` which was incorrect.
+`GainLoss.is_long_term_capital_gains()` delegates to `AbstractCountry.is_long_term_capital_gain(acquisition, disposal)`. The default compares whole days with `get_long_term_capital_gain_period()` (strictly greater). The US overrides it with the calendar rule of IRC §1222 / IRS Publication 544: counting starts the day after acquisition and includes the day of disposal, so a sale is long-term only if its date is after the first anniversary of the acquisition date. Exactly one year is short-term even when it spans February 29th (366 days); time of day doesn't matter.
 
 ### DONATE and GIFT Tax Treatment
 RP2 computes gain/loss for `DONATE` and `GIFT` out-transactions using the same formula as `SELL`. This is intentional — the output tabs give tax professionals the data they need. However, the actual tax treatment differs from a sale:
