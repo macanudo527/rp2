@@ -253,12 +253,22 @@ class InTransaction(AbstractTransaction):
     def originates_from(self) -> Dict[Account, "InTransaction"]:
         return self.__originates_from
 
+    # The lot this lot originates from via transfers or allocations (itself, if it's not artificial).
+    @property
+    def original_lot(self) -> "InTransaction":
+        result: InTransaction = self
+        while result.from_lot is not None:
+            result = result.from_lot
+        return result
+
     @property
     def cost_basis_timestamp(self) -> datetime:
         return self.__cost_basis_timestamp if self.__cost_basis_timestamp else self.timestamp
 
+    # Artificial InTransactions (from_lot is not None) model funds moving between the taxpayer's own wallets: they are never income, even if
+    # the lot they come from was earned.
     def is_taxable(self) -> bool:
-        return self.transaction_type.is_earn_type()
+        return self.transaction_type.is_earn_type() and self.from_lot is None
 
     def is_earning(self) -> bool:
         return self.is_taxable()
