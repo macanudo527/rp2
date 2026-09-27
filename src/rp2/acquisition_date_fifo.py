@@ -24,8 +24,8 @@ from rp2.rp2_decimal import RP2Decimal
 # which in a wallet is the order of arrival: a lot transferred into a wallet would then be treated as newer than the lots already
 # there, even when it was acquired earlier. Treas. Reg. §1.1012-1(j) orders units "from the earliest date on which units ... were
 # acquired by the taxpayer" and adds that "the date any units were transferred into the taxpayer's wallet is disregarded" ((j)(1) and
-# (j)(3)(i)), so this variant orders lots by cost_basis_timestamp (the original acquisition date, preserved across transfers). Ties are broken by arrival timestamp in the wallet,
-# then by row, so that the order is deterministic.
+# (j)(3)(i)), so this variant orders lots by cost_basis_timestamp (the original acquisition date, preserved across transfers). Ties
+# are broken by arrival timestamp in the wallet, then by row, so that the order is deterministic.
 class AcquisitionDateFifo(AbstractFeatureBasedAccountingMethod):
     def sort_key(self, lot: InTransaction) -> AcquiredLotSortKey:
         # The first field of the key is the primary sort criterion (spot price for HIFO/LOFO): here it's the acquisition timestamp. RP2Decimal
