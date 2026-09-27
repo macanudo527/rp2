@@ -26,7 +26,8 @@ from rp2.configuration import MAX_DATE, MIN_DATE, Configuration
 from rp2.gain_loss import GainLoss
 from rp2.gain_loss_set import GainLossSet
 from rp2.abstract_accounting_method import AbstractAccountingMethod
-from rp2.in_transaction import Account, InTransaction
+from rp2.account import Account
+from rp2.in_transaction import InTransaction
 from rp2.input_data import InputData
 from rp2.logger import LOGGER
 from rp2.rp2_decimal import ZERO, RP2Decimal

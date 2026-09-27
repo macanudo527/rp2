@@ -19,7 +19,7 @@ import unittest
 from typing import List
 
 from global_allocation_common import _Test, AbstractGlobalAllocation
-from rp2.in_transaction import Account
+from rp2.account import Account
 from rp2.plugin.accounting_method.fifo import AccountingMethod as AccountingMethodFIFO
 from rp2.plugin.accounting_method.lifo import AccountingMethod as AccountingMethodLIFO
 from rp2.plugin.accounting_method.hifo import AccountingMethod as AccountingMethodHIFO

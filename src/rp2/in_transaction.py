@@ -13,22 +13,16 @@
 # limitations under the License.
 
 from datetime import datetime
-from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
 from rp2.abstract_entry import AbstractEntry
 from rp2.abstract_transaction import AbstractTransaction
+from rp2.account import Account
 from rp2.configuration import Configuration
 from rp2.entry_types import TransactionType
 from rp2.logger import LOGGER
 from rp2.rp2_decimal import FIAT_DECIMAL_MASK, ZERO, RP2Decimal
 from rp2.rp2_error import RP2TypeError, RP2ValueError
-
-
-@dataclass(frozen=True, eq=True)
-class Account:
-    exchange: str
-    holder: str
 
 
 # pylint: disable=too-many-public-methods

@@ -21,7 +21,8 @@ from typing import cast, Dict, List, Optional
 from rp2.abstract_transaction import AbstractTransaction
 from rp2.abstract_accounting_method import AbstractAccountingMethod
 from rp2.configuration import Configuration
-from rp2.in_transaction import Account, InTransaction
+from rp2.account import Account
+from rp2.in_transaction import InTransaction
 from rp2.intra_transaction import IntraTransaction
 from rp2.input_data import InputData
 from rp2.out_transaction import OutTransaction

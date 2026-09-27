@@ -21,7 +21,7 @@ from rp2.configuration import Configuration
 from rp2.intra_transaction import IntraTransaction
 from rp2.rp2_error import RP2ValueError
 from rp2.global_allocation import GlobalAllocator
-from rp2.in_transaction import Account
+from rp2.account import Account
 
 from rp2.plugin.country.us import US
 from transaction_processing_common import AbstractTestTransactionProcessing, AbstractTransactionDescriptor, IntraTransactionDescriptor
