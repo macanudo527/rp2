@@ -3,5 +3,8 @@ exclude = [
   "https://www.forbes.com/.*",
   "https://www.reddit.com/.*",
   "https://finance.yahoo.com/.*",
-  "https://www.cointracker.io/.*"
+  "https://www.cointracker.io/.*",
+  # eCFR redirects automated requests to unblock.federalregister.gov ("programmatic access to these sites is limited to access to our
+  # extensive developer APIs"): the links work in a browser, but a link checker can't verify them.
+  "https://www.ecfr.gov/.*"
 ]
