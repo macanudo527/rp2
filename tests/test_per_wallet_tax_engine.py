@@ -207,6 +207,20 @@ class TestPerWalletTaxEngine(unittest.TestCase):
             for gain_loss in gain_losses
         ]
 
+    @staticmethod
+    def _want_tuples(want: List[_GainLoss]) -> List[_GainLossTuple]:
+        return [
+            (
+                w.taxable_event_unique_id,
+                w.acquired_lot_unique_id,
+                RP2Decimal(w.crypto_amount),
+                RP2Decimal(w.fiat_cost_basis),
+                RP2Decimal(w.fiat_gain),
+                w.is_long_term,
+            )
+            for w in want
+        ]
+
     def _run_test(self, test: _Test, country: object = None) -> None:
         configuration = Configuration(_CONFIGURATION_PATH, country or US())  # type: ignore
         input_data = self._create_input_data(configuration, test.transactions)
@@ -217,18 +231,7 @@ class TestPerWalletTaxEngine(unittest.TestCase):
             return
         computed_data = compute_tax_per_wallet(configuration, engine, input_data, test.per_wallet_configuration, test.allocation_method)
         got: List[_GainLossTuple] = self._to_tuples([gain_loss for gain_loss in computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)])
-        want: List[_GainLossTuple] = [
-            (
-                w.taxable_event_unique_id,
-                w.acquired_lot_unique_id,
-                RP2Decimal(w.crypto_amount),
-                RP2Decimal(w.fiat_cost_basis),
-                RP2Decimal(w.fiat_gain),
-                w.is_long_term,
-            )
-            for w in test.want
-        ]
-        self.assertEqual(_sorted(got), _sorted(want))
+        self.assertEqual(_sorted(got), _sorted(self._want_tuples(test.want)))
         if test.same_as_universal:
             universal_computed_data = compute_tax(configuration, self._create_accounting_engine(test.years_2_methods), input_data)
             universal = self._to_tuples([gain_loss for gain_loss in universal_computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)])
@@ -685,6 +688,111 @@ class TestPerWalletTaxEngine(unittest.TestCase):
         want_sale_rows: List[List[str]] = [["0.9", "B1", "01/02/2025", "03/01/2025", "270.0", "90.0", "", "", "180.0", "OUT / SELL"]]
         got_sale_rows: List[List[str]] = [row[:10] for row in data_rows("Capital Gains")]
         self.assertEqual(got_sale_rows, want_sale_rows)
+
+    # R05 from the review of eprbell/rp2#155: after a transfer fee, the basis left in the reports must match the coins actually left.
+    #
+    # The rule in plain English: the coins paid as a transfer fee are treated as sold (IRS FAQ A81, A97), so they use up their own share of
+    # the purchase cost. The fee is not added to the cost of the coins that arrive (FAQ A53), and the coins that arrive keep their purchase
+    # cost and date (Treas. Reg. §1.1012-1(j)(1): the date units were transferred into a wallet is disregarded).
+    #
+    # Example: buy 10 coins for $1,000 ($100 each), move them to another wallet paying 1 coin as the fee, so 9 coins arrive. The fee coin
+    # uses up $100 of cost, and the 9 coins that arrive carry the other $900. Sell 1 of them: 8 coins are left, with $800 of cost.
+    #
+    # The removed "basis carryover" option (R02) got this wrong: it spread the fee coin's $100 over the 9 coins that arrived ($111.11 each),
+    # but the Open Positions report still subtracted only the coins sold, so 8 coins showed $900 instead of $888.89. Selling all 9 left
+    # $100 of cost with no coins to hold it, and the Open Positions report crashed with KeyError: 'B1'.
+    def test_transfer_fee_leaves_no_phantom_basis(self) -> None:
+        class _Case(NamedTuple):
+            description: str
+            transactions: List[object]
+            want: List[_GainLoss]
+            # Fraction of lot i1 that is used up (fee plus sales), as shown in the "Sent/Sold" column of the full report.
+            want_sold_fraction: str
+            # Open Positions "Asset" sheet: asset, holder, balance, cost per unit, total cost of the coins still held.
+            want_by_asset: List[List[str]]
+            # Open Positions "Asset - Exchange" sheet: the same, per wallet.
+            want_by_exchange: List[List[str]]
+
+        buy_10 = _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "10")
+        # Move all 10 coins when they are worth $150 each, paying 1 coin as the fee. The fee is a sale of 1 coin for $150 with $100 of cost.
+        move_all = _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "10", "9")
+        fee_of_1_coin = _GainLoss("t1", "i1", "1", "100", "50", False)
+        cases = [
+            _Case(
+                description="sell 1 of the 9 coins received: 8 coins left with $800 of cost",
+                transactions=[buy_10, move_all, _Out("o1", "2025-03-01T00:00:00+00:00", "Kraken", "200", "1")],
+                want=[fee_of_1_coin, _GainLoss("o1", "i1", "1", "100", "100", False)],
+                want_sold_fraction="0.2",
+                want_by_asset=[["B1", "Bob", "8.0", "100.0", "800.0"]],
+                want_by_exchange=[["B1", "Bob", "Kraken", "8.0", "100.0", "800.0"]],
+            ),
+            _Case(
+                description="sell all 9 coins received: no coins and no cost left, and every report is generated",
+                transactions=[buy_10, move_all, _Out("o1", "2025-03-01T00:00:00+00:00", "Kraken", "200", "9")],
+                want=[fee_of_1_coin, _GainLoss("o1", "i1", "9", "900", "900", False)],
+                want_sold_fraction="1.0",
+                want_by_asset=[],
+                want_by_exchange=[],
+            ),
+            _Case(
+                # Part of the lot stays behind and part travels: move 6 of the 10 coins paying 1 coin as the fee (5 arrive), then sell 3 of
+                # the 5. Used up: 1 (fee) + 3 (sale) = 4 of 10 coins. Left: 4 coins on Coinbase and 2 on Kraken, $100 each.
+                description="lot partly used up across wallets: 6 coins left with $600 of cost",
+                transactions=[
+                    buy_10,
+                    _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "6", "5"),
+                    _Out("o1", "2025-03-01T00:00:00+00:00", "Kraken", "200", "3"),
+                ],
+                want=[fee_of_1_coin, _GainLoss("o1", "i1", "3", "300", "300", False)],
+                want_sold_fraction="0.4",
+                want_by_asset=[["B1", "Bob", "6.0", "100.0", "600.0"]],
+                want_by_exchange=[["B1", "Bob", "Coinbase", "4.0", "100.0", "400.0"], ["B1", "Bob", "Kraken", "2.0", "100.0", "200.0"]],
+            ),
+            _Case(
+                # Amounts that don't divide evenly must not leave a tiny rounding remainder of cost behind: buy 3 coins for $21 ($7 each),
+                # move them paying 0.1 coin as the fee, sell the 2.9 that arrive. Fee: 0.1 × $7 = $0.70 of cost; sale: 2.9 × $7 = $20.30.
+                description="uneven amounts: no rounding remainder of cost is left",
+                transactions=[
+                    _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "7", "3"),
+                    _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "9", "3", "2.9"),
+                    _Out("o1", "2025-03-01T00:00:00+00:00", "Kraken", "11", "2.9"),
+                ],
+                want=[_GainLoss("t1", "i1", "0.1", "0.7", "0.2", False), _GainLoss("o1", "i1", "2.9", "20.3", "11.6", False)],
+                want_sold_fraction="1.0",
+                want_by_asset=[],
+                want_by_exchange=[],
+            ),
+        ]
+
+        set_generation_language("en")
+        configuration = Configuration(_CONFIGURATION_PATH, US())
+        for case in cases:
+            with self.subTest(name=case.description):
+                input_data = self._create_input_data(configuration, case.transactions)
+                computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data, _UTC)
+                gain_losses = [gain_loss for gain_loss in computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)]
+                self.assertEqual(_sorted(self._to_tuples(gain_losses)), _sorted(self._want_tuples(case.want)))
+
+                # Generating the reports must not fail (selling everything used to crash Open Positions with KeyError: 'B1').
+                output_dir = Path("output") / Path("test_per_wallet_tax_engine_r05")
+                shutil.rmtree(output_dir, ignore_errors=True)
+                output_dir.mkdir(parents=True)
+                for generator in (OpenPositionsGenerator(), FullReportGenerator(), TaxReportUSGenerator()):
+                    generator.generate(US(), {1970: "fifo"}, {_ASSET: computed_data}, str(output_dir), "r05_", MIN_DATE, MAX_DATE, "en")
+
+                # Full report, In-Flow Detail: the first column of lot i1 is the fraction of the lot used up, counting the fee and the sales
+                # made from the wallet the coins were moved to.
+                in_out_rows = read_sheet_rows(output_dir / Path("r05_fifo_rp2_full_report.ods"), f"{_ASSET} In-Out") or []
+                got_sold_fraction: List[str] = [row[0] for row in in_out_rows if row[14:15] == ["i1"]]
+                want_sold_fraction: List[str] = [case.want_sold_fraction]
+                self.assertEqual(got_sold_fraction, want_sold_fraction)
+
+                # Open Positions: the coins still held and their remaining cost (purchase cost minus the cost used up by the fee and sales).
+                open_positions_path = output_dir / Path("r05_fifo_open_positions.ods")
+                got_by_asset: List[List[str]] = [row[:5] for row in read_sheet_rows(open_positions_path, "Asset") or [] if row[:1] == [_ASSET]]
+                self.assertEqual(got_by_asset, case.want_by_asset)
+                got_by_exchange: List[List[str]] = [row[:6] for row in read_sheet_rows(open_positions_path, "Asset - Exchange") or [] if row[:1] == [_ASSET]]
+                self.assertEqual(got_by_exchange, case.want_by_exchange)
 
     def test_artificial_in_transaction_is_not_income(self) -> None:
         configuration = Configuration(_CONFIGURATION_PATH, US())
