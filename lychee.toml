@@ -6,5 +6,7 @@ exclude = [
   "https://www.cointracker.io/.*",
   # eCFR redirects automated requests to unblock.federalregister.gov ("programmatic access to these sites is limited to access to our
   # extensive developer APIs"): the links work in a browser, but a link checker can't verify them.
-  "https://www.ecfr.gov/.*"
+  "https://www.ecfr.gov/.*",
+  # DeepWiki rate-limits the link checker (429 Too Many Requests).
+  "https://deepwiki.com/.*"
 ]
