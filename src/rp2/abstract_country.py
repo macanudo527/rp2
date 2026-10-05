@@ -14,10 +14,11 @@
 
 
 from datetime import datetime
-from typing import List, Optional, Set
+from typing import List, Set
 
 from pycountry import countries, currencies
 
+from rp2.application_policy import UNIVERSAL_APPLICATION_POLICY, ApplicationPolicy
 from rp2.rp2_error import RP2TypeError, RP2ValueError
 
 
@@ -98,7 +99,7 @@ class AbstractCountry:
     def get_default_generation_language(self) -> str:
         raise NotImplementedError("Abstract function")
 
-    # First tax year in which per-wallet application is used (earlier years use universal application). None means that the country
-    # always uses universal application: per-wallet application is then rejected.
-    def get_per_wallet_application_start_year(self) -> Optional[int]:
-        return None
+    # Which application modes (universal, per-wallet) the country allows in each tax year, and the default one. The default policy is
+    # universal application in every year: countries that require per-wallet application override it.
+    def get_application_policy(self) -> ApplicationPolicy:
+        return UNIVERSAL_APPLICATION_POLICY

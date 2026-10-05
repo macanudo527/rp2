@@ -21,7 +21,7 @@ from importlib import import_module
 from pathlib import Path
 from pkgutil import iter_modules
 from types import ModuleType
-from typing import Dict, List, NamedTuple, Optional, Set
+from typing import Dict, List, Optional, Set
 
 from prezzemolo.avl_tree import AVLTree
 
@@ -40,7 +40,7 @@ from rp2.input_data import InputData
 from rp2.localization import set_generation_language
 from rp2.logger import LOG_FILE, LOGGER
 from rp2.ods_parser import open_ods, parse_ods
-from rp2.per_wallet_configuration import PerWalletConfiguration
+from rp2.rp2_error import RP2RuntimeError, RP2ValueError
 from rp2.tax_engine import compute_tax, compute_tax_per_wallet
 
 _VERSION: str = "1.7.2"
@@ -119,9 +119,7 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
 
         accounting_engine: AccountingEngine = AccountingEngine(years_2_methods=years_2_accounting_methods)
 
-        per_wallet_setup = _setup_per_wallet_application(args.per_wallet, configuration, country)
-        per_wallet_configuration = per_wallet_setup.per_wallet_configuration
-        per_wallet_start_year: Optional[int] = country.get_per_wallet_application_start_year()
+        allocation_method_name_2_method = _load_allocation_methods(configuration, country)
 
         LOGGER.info("Configuration file: %s", args.configuration_file)
 
@@ -140,32 +138,34 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
 
         LOGGER.info("Input file: %s", args.input_file)
         input_file_handle: object = open_ods(configuration=configuration, input_file_path=args.input_file)
+        # The application mode of every asset is resolved (and the configuration checked against it) before any computation starts.
+        asset_2_input_data: Dict[str, InputData] = {}
+        asset_2_per_wallet_start_year: Dict[str, Optional[int]] = {}
         for asset in assets:
-            LOGGER.info("Processing %s", asset)
-
             input_data: InputData = parse_ods(configuration=configuration, asset=asset, input_file_handle=input_file_handle)
             LOGGER.debug("InputData object: %s", input_data)
+            asset_2_input_data[asset] = input_data
+            asset_2_per_wallet_start_year[asset] = _get_per_wallet_start_year(configuration, country, input_data)
 
+        for asset in assets:
+            LOGGER.info("Processing %s", asset)
+            input_data = asset_2_input_data[asset]
+            per_wallet_start_year = asset_2_per_wallet_start_year[asset]
             computed_data: ComputedData
-            if per_wallet_configuration is not None:
+            per_wallet_configuration = configuration.per_wallet_configuration
+            if per_wallet_start_year is not None:
+                if per_wallet_configuration is None:
+                    raise RP2RuntimeError(f"Internal error: per-wallet application of {asset} without per-wallet configuration")
                 allocation_method_name = per_wallet_configuration.get_unused_basis_allocation_method(asset)
                 computed_data = compute_tax_per_wallet(
                     configuration=configuration,
                     accounting_engine=accounting_engine,
                     input_data=input_data,
                     per_wallet_configuration=per_wallet_configuration,
-                    allocation_method=per_wallet_setup.allocation_method_name_2_method[allocation_method_name] if allocation_method_name else None,
+                    allocation_method=allocation_method_name_2_method[allocation_method_name] if allocation_method_name else None,
+                    per_wallet_start_year=per_wallet_start_year,
                 )
             else:
-                if per_wallet_start_year is not None and _has_transactions_from_year(input_data, per_wallet_start_year):
-                    LOGGER.warning(
-                        "%s has transactions in %d or later: %s requires per-wallet application from %d, but RP2 is using universal application "
-                        "(use -w to turn per-wallet application on).",
-                        asset,
-                        per_wallet_start_year,
-                        country.country_iso_code.upper(),
-                        per_wallet_start_year,
-                    )
                 computed_data = compute_tax(configuration=configuration, accounting_engine=accounting_engine, input_data=input_data)
             LOGGER.debug("ComputedData object: %s", computed_data)
 
@@ -191,35 +191,46 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
     LOGGER.info("Done")
 
 
-# Per-wallet settings used by the main loop: per_wallet_configuration is None when per-wallet application is off.
-class _PerWalletSetup(NamedTuple):
-    per_wallet_configuration: Optional[PerWalletConfiguration]
-    allocation_method_name_2_method: Dict[str, AbstractAccountingMethod]
-
-
-# Validates the per-wallet settings (-w and the per_wallet section of the configuration file) and loads the unused basis allocation methods.
-# Per-wallet application is rejected for countries that always use universal application (e.g. Japan).
-def _setup_per_wallet_application(per_wallet: bool, configuration: Configuration, country: AbstractCountry) -> _PerWalletSetup:
-    if not per_wallet:
-        if configuration.per_wallet_configuration is not None:
-            LOGGER.warning("The configuration file has a 'per_wallet' section, but per-wallet application is off (use -w to turn it on).")
-        return _PerWalletSetup(None, {})
-    start_year = country.get_per_wallet_application_start_year()
-    if start_year is None:
-        LOGGER.error("Per-wallet application (-w) is not supported for country '%s': it always uses universal application.", country.country_iso_code)
-        sys.exit(1)
-    per_wallet_configuration = configuration.per_wallet_configuration
-    if per_wallet_configuration is None:
-        LOGGER.error("Per-wallet application (-w) requires a 'per_wallet' section in the configuration file (see docs/input_files.md).")
-        sys.exit(1)
-    allocation_method_name_2_method: Dict[str, AbstractAccountingMethod] = {}
-    for method_name in sorted(per_wallet_configuration.unused_basis_allocation_method_names):
+# Loads the unused basis allocation methods of the per-wallet settings in the country section (by name, e.g. "fifo").
+def _load_allocation_methods(configuration: Configuration, country: AbstractCountry) -> Dict[str, AbstractAccountingMethod]:
+    result: Dict[str, AbstractAccountingMethod] = {}
+    if configuration.per_wallet_configuration is None:
+        return result
+    for method_name in sorted(configuration.per_wallet_configuration.unused_basis_allocation_method_names):
         if method_name not in country.get_accounting_methods():
             LOGGER.error("Invalid/unsupported unused basis allocation method: %s", method_name)
             sys.exit(1)
-        allocation_method_name_2_method[method_name] = _load_accounting_method(method_name)
-    LOGGER.info("Application: universal before %d, per-wallet from %d (timezone %s)", start_year, start_year, per_wallet_configuration.timezone_name)
-    return _PerWalletSetup(per_wallet_configuration, allocation_method_name_2_method)
+        result[method_name] = _load_accounting_method(method_name)
+    return result
+
+
+# First year of per-wallet application of an asset, or None if all its years use universal application. The application mode of each year
+# with transactions comes from the country's policy and the user's choice (application_mode in the country section, if any): a choice
+# that a year doesn't allow is an error. Per-wallet application needs the per-wallet settings of the country section (at least the
+# timezone): if they are missing it's an error, never a silent fallback to universal application.
+def _get_per_wallet_start_year(configuration: Configuration, country: AbstractCountry, input_data: InputData) -> Optional[int]:
+    policy = country.get_application_policy()
+    try:
+        year_2_mode = policy.get_year_2_mode(_get_transaction_years(input_data), configuration.application_mode)
+        result = policy.get_per_wallet_start_year(year_2_mode)
+    except RP2ValueError as exc:
+        raise RP2ValueError(f"{input_data.asset}: {exc}") from exc
+    if result is None:
+        return None
+    if configuration.per_wallet_configuration is None:
+        raise RP2ValueError(
+            f"{input_data.asset} has transactions in {result} or later, when {country.country_iso_code.upper()} requires per-wallet application: "
+            f"add a 'country.{country.country_iso_code}' section with at least the 'timezone' field to the configuration file "
+            "(see docs/input_files.md)"
+        )
+    LOGGER.info(
+        "%s: universal application before %d, per-wallet application from %d (timezone %s)",
+        input_data.asset,
+        result,
+        result,
+        configuration.per_wallet_configuration.timezone_name,
+    )
+    return result
 
 
 # Loads an accounting method plugin by name (e.g. "fifo"), exiting with an error if it doesn't exist.
@@ -236,17 +247,17 @@ def _load_accounting_method(accounting_method_name: str) -> AbstractAccountingMe
     return result
 
 
-# True if the input has transactions in the given year or later (used to warn US users who forget -w).
-def _has_transactions_from_year(input_data: InputData, year: int) -> bool:
-    return any(
-        transaction.timestamp.year >= year
+# Tax years in which the input has transactions (the year of each timestamp, in its own timezone).
+def _get_transaction_years(input_data: InputData) -> Set[int]:
+    return {
+        transaction.timestamp.year
         for transaction_set in (
             input_data.unfiltered_in_transaction_set,
             input_data.unfiltered_out_transaction_set,
             input_data.unfiltered_intra_transaction_set,
         )
         for transaction in transaction_set
-    )
+    }
 
 
 def _find_and_run_report_generators(
@@ -408,17 +419,6 @@ def _setup_argument_parser(country: AbstractCountry) -> ArgumentParser:
         help="Prepend output file names with PREFIX",
         metavar="PREFIX",
         type=str,
-    )
-    parser.add_argument(
-        "-w",
-        "--per-wallet",
-        action="store_true",
-        dest="per_wallet",
-        default=False,
-        help=(
-            "use per-wallet application from the country's per-wallet start year (e.g. 2025 in the US); earlier years use universal "
-            "application. Requires a 'per_wallet' section in the configuration file"
-        ),
     )
     parser.add_argument(
         "-t",

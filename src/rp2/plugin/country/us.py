@@ -14,12 +14,25 @@
 
 
 from datetime import datetime
-from typing import Optional, Set
+from typing import Set
 
 from dateutil.relativedelta import relativedelta
 
 from rp2.abstract_country import AbstractCountry
+from rp2.application_policy import (
+    ApplicationMode,
+    ApplicationPeriod,
+    ApplicationPolicy,
+)
 from rp2.rp2_main import rp2_main
+
+# Universal application until 2024, per-wallet application from 2025 (see US.get_application_policy()).
+_US_APPLICATION_POLICY = ApplicationPolicy(
+    [
+        ApplicationPeriod(1, frozenset({ApplicationMode.UNIVERSAL}), ApplicationMode.UNIVERSAL),
+        ApplicationPeriod(2025, frozenset({ApplicationMode.PER_WALLET}), ApplicationMode.PER_WALLET),
+    ]
+)
 
 
 # US-specific class
@@ -59,10 +72,12 @@ class US(AbstractCountry):
     def get_default_generation_language(self) -> str:
         return "en"
 
-    # Treas. Reg. §1.1012-1(j) (T.D. 10000) requires basis identification per wallet or account for dispositions on or after
-    # January 1, 2025: earlier years keep universal application (see also Rev. Proc. 2024-28).
-    def get_per_wallet_application_start_year(self) -> Optional[int]:
-        return 2025
+    # Treas. Reg. §1.1012-1(j)(6): basis identification per wallet or account "is applicable to all acquisitions and dispositions of
+    # digital assets on or after January 1, 2025". Earlier years use universal application, which Rev. Proc. 2024-28 recognizes for the
+    # transition. RP2 doesn't support a per-wallet history before 2025 (taxpayers who tracked wallets earlier are not covered yet), so each
+    # period allows exactly one mode and the user doesn't need to choose.
+    def get_application_policy(self) -> ApplicationPolicy:
+        return _US_APPLICATION_POLICY
 
 
 # US-specific entry point

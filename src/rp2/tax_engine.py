@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Dict, Iterable, Iterator, List, NamedTuple, Optional, cast
 
 from rp2.abstract_accounting_method import AbstractAccountingMethod
+from rp2.abstract_country import AbstractCountry
 from rp2.abstract_transaction import AbstractTransaction
 from rp2.account import Account
 from rp2.accounting_engine import (
@@ -24,6 +25,7 @@ from rp2.accounting_engine import (
     TaxableEventAndAcquiredLot,
     TaxableEventsExhaustedException,
 )
+from rp2.application_policy import ApplicationMode, ApplicationPolicy
 from rp2.balance import CRYPTO_BALANCE_DECIMAL_MASK
 from rp2.computed_data import ComputedData
 from rp2.configuration import MAX_DATE, MIN_DATE, Configuration
@@ -206,6 +208,8 @@ class _TaxResult(NamedTuple):
 #    2024-28 global allocation, see UnusedBasisAllocator);
 # 3) after the switch: TransferAnalyzer tracks lots per wallet and pairs every taxable event with lots of its own wallet.
 # allocation_method is the unused basis allocation method of this asset (see PerWalletConfiguration.get_unused_basis_allocation_method()).
+# per_wallet_start_year is the first year of per-wallet application: it must be the start of a period of the country's application policy
+# that allows per-wallet application. If it's None, the first such period whose default mode is per-wallet is used.
 # The returned ComputedData refers to the original (universal) input data, so that reports show the user's transactions.
 def compute_tax_per_wallet(
     configuration: Configuration,
@@ -213,15 +217,14 @@ def compute_tax_per_wallet(
     input_data: InputData,
     per_wallet_configuration: PerWalletConfiguration,
     allocation_method: Optional[AbstractAccountingMethod] = None,
+    per_wallet_start_year: Optional[int] = None,
 ) -> ComputedData:
     Configuration.type_check("configuration", configuration)
     AccountingEngine.type_check("accounting_engine", accounting_engine)
     InputData.type_check("input_data", input_data)
     PerWalletConfiguration.type_check("per_wallet_configuration", per_wallet_configuration)
 
-    start_year = configuration.country.get_per_wallet_application_start_year()
-    if start_year is None:
-        raise RP2ValueError(f"Per-wallet application is not supported for country '{configuration.country.country_iso_code}'")
+    start_year = _get_per_wallet_start_year(configuration.country.get_application_policy(), configuration.country, per_wallet_start_year)
     switch_timestamp = datetime(start_year, 1, 1, tzinfo=per_wallet_configuration.timezone)
 
     all_transactions = list(cast(Iterable[AbstractTransaction], input_data.create_all_transaction_set(configuration)))
@@ -275,6 +278,20 @@ def compute_tax_per_wallet(
     )
 
 
+# Checks (or, if None, finds) the first year of per-wallet application against the country's application policy.
+def _get_per_wallet_start_year(policy: ApplicationPolicy, country: AbstractCountry, per_wallet_start_year: Optional[int]) -> int:
+    if per_wallet_start_year is None:
+        for period in policy.periods:
+            if period.default_mode == ApplicationMode.PER_WALLET:
+                return period.start_year
+        raise RP2ValueError(f"Per-wallet application is not supported for country '{country.country_iso_code}'")
+    Configuration.type_check_positive_int("per_wallet_start_year", per_wallet_start_year)
+    period = policy.get_period(per_wallet_start_year)
+    if period.start_year != per_wallet_start_year or ApplicationMode.PER_WALLET not in period.allowed_modes:
+        raise RP2ValueError(f"Per-wallet application can't start in {per_wallet_start_year} for country '{country.country_iso_code}'")
+    return per_wallet_start_year
+
+
 # Universal application: the same computation as compute_tax(), restricted to the given input data.
 def _compute_universal_tax(configuration: Configuration, accounting_engine: AccountingEngine, input_data: InputData) -> _TaxResult:
     taxable_event_set = input_data.create_unfiltered_taxable_event_set(configuration)
@@ -325,7 +342,7 @@ def _check_tax_year_boundary(transactions: List[AbstractTransaction], switch_tim
         raise RP2ValueError(
             f"{len(ambiguous_transactions)} transaction(s) fall in tax year {start_year} (or later) by their own timestamp but before the switch to "
             f"per-wallet application ({switch_timestamp}, timezone '{timezone_name}'), or vice versa: express their timestamps in timezone "
-            f"'{timezone_name}' or change the timezone in the per_wallet section of the configuration file. "
+            f"'{timezone_name}' or change the timezone in the country section of the configuration file (e.g. country.us). "
             f"First one: {ambiguous_transactions[0]}"
         )
 
@@ -402,7 +419,7 @@ def _get_transfer_fee_treatment(transactions: List[AbstractTransaction], per_wal
     transfers_with_fee = [transaction for transaction in transactions if isinstance(transaction, IntraTransaction) and transaction.crypto_fee > ZERO]
     if transfers_with_fee:
         raise RP2ValueError(
-            f"{len(transfers_with_fee)} transfer(s) between wallets have a crypto fee, but 'transfer_fee_treatment' is not defined in the per_wallet "
+            f"{len(transfers_with_fee)} transfer(s) between wallets have a crypto fee, but 'transfer_fee_treatment' is not defined in the country "
             f"section of the configuration file (valid values: {', '.join(treatment.value for treatment in TransferFeeTreatment)}). "
             f"First one: {transfers_with_fee[0]}"
         )

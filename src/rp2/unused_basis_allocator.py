@@ -92,7 +92,7 @@ class UnusedBasisAllocator:
                 f"Unused basis allocation is needed at {self.__switch_timestamp} ({len(funded_accounts)} wallets hold "
                 f"{self.__unused_lots[0].acquired_lot.asset if self.__unused_lots else ''} funds: "
                 f"{', '.join(_account_sort_key(account) for account in funded_accounts)}), but the 'unused_basis_allocation_method' "
-                "and 'unused_basis_allocation_wallet_order' fields are not defined in the per_wallet section of the configuration file "
+                "and 'unused_basis_allocation_wallet_order' fields are not defined in the country section of the configuration file (e.g. country.us) "
                 "(see Rev. Proc. 2024-28)"
             )
         missing_accounts = [account for account in funded_accounts if account not in self.__wallet_order]

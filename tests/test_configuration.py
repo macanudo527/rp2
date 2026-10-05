@@ -23,7 +23,9 @@ from dateutil.tz import tzoffset, tzutc
 
 from rp2.abstract_country import AbstractCountry
 from rp2.account import Account
+from rp2.application_policy import ApplicationMode
 from rp2.configuration import Configuration, Keyword
+from rp2.plugin.country.jp import JP
 from rp2.plugin.country.us import US
 from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2TypeError, RP2ValueError
@@ -42,23 +44,57 @@ class TestConfiguration(unittest.TestCase):
         self.maxDiff = None  # pylint: disable=invalid-name
 
     @staticmethod
-    def _test_config(config: ConfigParser) -> Configuration:
+    def _test_config(config: ConfigParser, country: Optional[AbstractCountry] = None) -> Configuration:
         result: Optional[Configuration] = None
         with NamedTemporaryFile("w", delete=False) as temporary_file:
             config.write(temporary_file)
             temporary_file.flush()
 
-            result = Configuration(temporary_file.name, TestConfiguration._country)
+            result = Configuration(temporary_file.name, country or TestConfiguration._country)
         os.remove(temporary_file.name)
 
         return result
 
     @staticmethod
-    def _per_wallet_config(fields: Dict[str, str]) -> ConfigParser:
+    def _country_config(section_name: str, fields: Dict[str, str]) -> ConfigParser:
         config = ConfigParser()
         config.read("./config/test_data.ini")
-        config["per_wallet"] = {"timezone": "America/New_York", **fields}
+        config[section_name] = fields
         return config
+
+    @staticmethod
+    def _per_wallet_config(fields: Dict[str, str]) -> ConfigParser:
+        return TestConfiguration._country_config("country.us", {"timezone": "America/New_York", **fields})
+
+    # Country choices are in the section of the country ([country.us] for rp2_us): a section of another country, or per-wallet settings for a
+    # country that always uses universal application, are rejected so that they can't be applied by accident.
+    def test_country_section(self) -> None:
+        configuration = self._test_config(self._country_config("country.us", {"application_mode": "per_wallet"}))
+        self.assertEqual(configuration.application_mode, ApplicationMode.PER_WALLET)
+        self.assertIsNone(configuration.per_wallet_configuration)
+        self.assertIsNone(TestConfiguration._configuration.application_mode)
+
+        with self.assertRaisesRegex(RP2ValueError, "Invalid application mode 'wallet': valid values are universal, per_wallet"):
+            self._test_config(self._country_config("country.us", {"application_mode": "wallet"}))
+        with self.assertRaisesRegex(RP2ValueError, "section 'country.jp' is for another country: this is rp2_us, whose section is 'country.us'"):
+            self._test_config(self._country_config("country.jp", {"application_mode": "universal"}))
+        with self.assertRaisesRegex(RP2ValueError, "section 'per_wallet' has been replaced by 'country.us'"):
+            self._test_config(self._country_config("per_wallet", {"timezone": "UTC"}))
+        config = self._country_config("country.us", {"application_mode": "per_wallet"})
+        config["country.us 2"] = {"timezone": "UTC"}
+        with self.assertRaisesRegex(RP2ValueError, "section 'country.us' found multiple times"):
+            self._test_config(config)
+
+        # Japan always uses universal application.
+        japan = JP()
+        configuration = self._test_config(self._country_config("country.jp", {"application_mode": "universal"}), japan)
+        self.assertEqual(configuration.application_mode, ApplicationMode.UNIVERSAL)
+        with self.assertRaisesRegex(RP2ValueError, "application mode 'per_wallet' is never allowed for country 'jp'"):
+            self._test_config(self._country_config("country.jp", {"application_mode": "per_wallet"}), japan)
+        with self.assertRaisesRegex(RP2ValueError, "invalid field 'timezone' in section 'country.jp': country 'jp' always uses universal application"):
+            self._test_config(self._country_config("country.jp", {"timezone": "Asia/Tokyo"}), japan)
+        with self.assertRaisesRegex(RP2ValueError, "section 'country.us' is for another country: this is rp2_jp, whose section is 'country.jp'"):
+            self._test_config(self._per_wallet_config({}), japan)
 
     def test_per_wallet_section(self) -> None:
         # Default rule plus per-asset overrides (Rev. Proc. 2024-28 applies the safe harbor per type of digital asset). Asset suffixes are
@@ -100,10 +136,14 @@ class TestConfiguration(unittest.TestCase):
             self._test_config(self._per_wallet_config({"unused_basis_allocation_method.B1": "fifo"}))
         with self.assertRaisesRegex(RP2ValueError, "invalid wallet 'Binance/Bob'"):
             self._test_config(self._per_wallet_config({"unused_basis_allocation_method.B1": "fifo", "unused_basis_allocation_wallet_order.B1": "Binance/Bob"}))
-        config = self._per_wallet_config({})
-        del config["per_wallet"]["timezone"]
+        # The timezone is mandatory as soon as the section has a per-wallet setting.
+        config = self._per_wallet_config({"unused_basis_allocation_method": "fifo", "unused_basis_allocation_wallet_order": "Coinbase/Bob"})
+        del config["country.us"]["timezone"]
         with self.assertRaisesRegex(RP2ValueError, "doesn't contain mandatory field 'timezone'"):
             self._test_config(config)
+        config = self._per_wallet_config({})
+        del config["country.us"]["timezone"]
+        self.assertIsNone(self._test_config(config).per_wallet_configuration)
 
     def test_config_file(self) -> None:
         config = ConfigParser()

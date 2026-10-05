@@ -23,9 +23,9 @@ from rp2.rp2_error import RP2TypeError, RP2ValueError
 from rp2.transfer_fee_treatment import TransferFeeTreatment
 
 
-# User choices for per-wallet application (the [per_wallet] section of the configuration file). Each of these is a decision the law
-# doesn't settle, or that only the taxpayer can make, so none of them has a silent default: the per-wallet tax engine raises an error if
-# the input needs one of them and it's missing.
+# User choices for per-wallet application: the per-wallet fields of the country section of the configuration file (e.g. [country.us]).
+# Each of these is a decision the law doesn't settle, or that only the taxpayer can make, so none of them has a silent default: the
+# per-wallet tax engine raises an error if the input needs one of them and it's missing.
 @dataclass(frozen=True, eq=True)
 class PerWalletConfiguration:
     # IANA time zone (e.g. America/New_York) in which the start of the first per-wallet year is measured.

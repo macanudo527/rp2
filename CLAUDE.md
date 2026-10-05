@@ -75,15 +75,17 @@ ComputedData (asset → GainLossSet)
 plugin/report/ generators → ODS output files + logs
 ```
 
-#### Per-Wallet (`-w`, countries with a per-wallet start year, e.g. US from 2025)
+#### Per-Wallet (selected by the country's application policy, e.g. US from 2025; no CLI flag)
 
 ```
-Config file (INI, with [per_wallet] section) + Input ODS spreadsheet
+Config file (INI, with [country.us] section) + Input ODS spreadsheet
   ↓
 ods_parser.py → InputData (universal: all transactions by asset)
   ↓
 tax_engine.compute_tax_per_wallet():
-  - switch instant = Jan 1 of country.get_per_wallet_application_start_year(), in [per_wallet] timezone;
+  - rp2_main resolves each asset's mode per year from country.get_application_policy() (ApplicationPolicy) and the optional
+    application_mode choice; per-wallet years need the [country.us] per-wallet fields (else RP2ValueError, no silent fallback)
+  - switch instant = Jan 1 of the first per-wallet policy period, in [country.us] timezone;
     transactions whose own-timestamp year disagrees with the switch → RP2ValueError (never guessed)
   - before the switch: universal application, identical to compute_tax()
   - at the switch: UnusedBasisAllocator assigns the lots still unused under universal application to the
@@ -93,7 +95,7 @@ tax_engine.compute_tax_per_wallet():
     (same timestamp: In, Intra, Out, then row), per wallet, with the accounting method of each year:
       InTransaction → lot added to its wallet (earn types → income GainLoss)
       OutTransaction → lots taken from its wallet only → GainLoss per lot piece
-      IntraTransaction → fee paid first (disposal GainLoss or basis carryover, per [per_wallet]
+      IntraTransaction → fee paid first (disposal GainLoss or basis carryover, per [country.us]
         transfer_fee_treatment), received units become artificial InTransactions in the destination
         (cycles A→B→A return units to the original lot)
   ↓
@@ -129,7 +131,8 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 | `TransferAnalyzer` | `transfer_analyzer.py` | Per-wallet engine: decomposes `InputData` into per-wallet `InputData` and pairs taxable events with lots of their wallet (`analyze_and_pair()`) |
 | `AcquisitionDateFifo` | `acquisition_date_fifo.py` | Per-wallet FIFO: orders lots by original acquisition date (`cost_basis_timestamp`), not arrival date |
 | `UnusedBasisAllocator` | `unused_basis_allocator.py` | [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) global allocation of unused lots to wallets at the per-wallet switch |
-| `PerWalletConfiguration` | `per_wallet_configuration.py` | `[per_wallet]` config section: timezone, transfer fee treatment, unused basis allocation rule (default plus per-asset overrides, `<field>.<asset>`) |
+| `PerWalletConfiguration` | `per_wallet_configuration.py` | per-wallet fields of the `[country.<code>]` config section: timezone, transfer fee treatment, unused basis allocation rule (default plus per-asset overrides, `<field>.<asset>`) |
+| `ApplicationPolicy` | `application_policy.py` | Per-year allowed/default `ApplicationMode` (universal, per-wallet) of a country (`AbstractCountry.get_application_policy()`); resolves the user's optional `application_mode` and the per-wallet switch year |
 | `TransferFeeTreatment` | `transfer_fee_treatment.py` | `DISPOSAL` or `BASIS_CARRYOVER` for crypto fees on transfers between own wallets (unsettled US law: user must choose) |
 | `GlobalAllocator` | `global_allocation.py` | Earlier, unwired prototype of global allocation (superseded by `UnusedBasisAllocator`) |
 
@@ -157,7 +160,8 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 
 - `tests/test_per_wallet_tax_engine.py` — end-to-end, hand-computed examples for `compute_tax_per_wallet` (edge cases: fees, #149, holding period, allocation, timezone boundary, same-timestamp order, cycles, method change, dust).
 - `tests/test_per_wallet_properties.py` — hypothesis property tests: wallet lots = wallet balance after each step, basis/lot conservation, single wallet per-wallet == universal, JP universal results unaffected.
-- `tests/test_ods_output_diff_per_wallet.py` — `-w` output for pre-2025 datasets is identical to universal output; `rp2_jp -w` is rejected.
+- `tests/test_ods_output_diff_per_wallet.py` — CLI: country section doesn't change pre-2025 output; 2025 data needs `[country.us]`; conflicting `application_mode` and other countries' sections are rejected; `-w` no longer exists.
+- `tests/test_application_policy.py` — `ApplicationPolicy`: per-year modes, explicit choices, switch year, policy validation.
 
 - `tests/test_transfer_analysis_semantics_independent.py` — transfer analysis tests whose expected results do not depend on which accounting method is used for transfer semantics (e.g., single-lot transfers).
 - `tests/test_transfer_analysis_semantics_dependent.py` — transfer analysis tests whose results differ based on FIFO vs. LIFO vs. HIFO transfer semantics.
@@ -193,7 +197,7 @@ RP2 has no dedicated slash transaction type. Involuntary stake losses (slashing)
 When two transactions share the same timestamp, their relative order is determined by their row number in the input spreadsheet. For LIFO and HIFO methods, swapping same-timestamp rows changes which lot is selected, potentially altering the tax outcome with no warning. In per-wallet application `TransferAnalyzer` orders same-timestamp transactions as In, Intra, Out, then by row, so funds that arrive at an instant can be disposed of at the same instant.
 
 ### Universal Lot Pool (default path)
-All accounting methods (FIFO, LIFO, HIFO, LOFO) operate on a single global pool of lots per asset, regardless of which exchange or wallet the lots are held in. Per-wallet application is enabled with `-w` (countries whose `get_per_wallet_application_start_year()` is not None, currently only the US) and needs a `[per_wallet]` config section. Balance enforcement IS per-account (via `BalanceSet`), but lot selection is global in the universal path.
+All accounting methods (FIFO, LIFO, HIFO, LOFO) operate on a single global pool of lots per asset, regardless of which exchange or wallet the lots are held in. Per-wallet application is selected per year by the country's `get_application_policy()` (currently only the US allows it, from 2025) and needs the `[country.us]` config section. Balance enforcement IS per-account (via `BalanceSet`), but lot selection is global in the universal path.
 
 ### Artificial InTransactions (per-wallet path only)
 `TransferAnalyzer` creates artificial `InTransaction` objects to model the "to" side of each `IntraTransaction`. These artificial transactions exist only in per-wallet `InputData` objects — they are never present in the original universal `InputData` returned by `ods_parser.py`. Identifying fields: `from_lot is not None`. The fields `from_lot`, `to_lots`, and `originates_from` are only meaningful on artificial InTransactions.
@@ -208,4 +212,4 @@ All accounting methods (FIFO, LIFO, HIFO, LOFO) operate on a single global pool 
 `global_allocation.py` is an earlier prototype that is not wired into the CLI (TODOs: fee splitting, spot price). The per-wallet pipeline uses `UnusedBasisAllocator`, which allocates the lots left unused by universal application (the [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) definition of unused basis) rather than lots traced per wallet.
 
 ### Japan and Other Universal-Only Countries
-`get_per_wallet_application_start_year()` returns None by default: `-w` is rejected and `compute_tax_per_wallet()` raises. Note that the JP plugin only offers FIFO, although Japanese law prescribes 総平均法 (default) or 移動平均法 for individuals (docs/supported_countries.md claims total average): this is a known, pre-existing gap.
+`get_application_policy()` returns `UNIVERSAL_APPLICATION_POLICY` by default: per-wallet settings in the config file are rejected and `compute_tax_per_wallet()` raises. Note that the JP plugin only offers FIFO, although Japanese law prescribes 総平均法 (default) or 移動平均法 for individuals (docs/supported_countries.md claims total average): this is a known, pre-existing gap.

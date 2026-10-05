@@ -618,6 +618,18 @@ class TestPerWalletTaxEngine(unittest.TestCase):
             country=JP(),
         )
 
+    def test_per_wallet_start_year_must_match_the_country_policy(self) -> None:
+        # The US policy switches to per-wallet application at the start of 2025: no other switch year is accepted.
+        configuration = Configuration(_CONFIGURATION_PATH, US())
+        input_data = self._create_input_data(configuration, [_In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "1")])
+        engine = self._create_accounting_engine(None)
+        for year in (2024, 2026):
+            with self.subTest(year=year):
+                with self.assertRaisesRegex(RP2ValueError, f"Per-wallet application can't start in {year} for country 'us'"):
+                    compute_tax_per_wallet(configuration, engine, input_data, _UTC, per_wallet_start_year=year)
+        computed_data = compute_tax_per_wallet(configuration, engine, input_data, _UTC, per_wallet_start_year=2025)
+        self.assertEqual(len(list(computed_data.gain_loss_set)), 0)
+
     def test_reports_with_artificial_lots(self) -> None:
         # Gain/losses on artificial lots (transfer destinations, unused basis allocation) must not break report generation, and Form 8949
         # "date acquired" must be the original acquisition date, not the transfer date.
