@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
+from ods_diff import read_sheet_rows
 from prezzemolo.avl_tree import AVLTree
 
 from rp2.abstract_accounting_method import AbstractAccountingMethod
@@ -51,7 +52,6 @@ from rp2.rp2_decimal import RP2Decimal
 from rp2.rp2_error import RP2ValueError
 from rp2.tax_engine import compute_tax, compute_tax_per_wallet
 from rp2.transaction_set import TransactionSet
-from rp2.transfer_fee_treatment import TransferFeeTreatment
 
 _ASSET = "B1"
 _CONFIGURATION_PATH = "./config/test_data.ini"
@@ -117,10 +117,6 @@ class _Test:
     years_2_methods: Optional[Dict[int, AbstractAccountingMethod]] = None
     # With a single wallet per-wallet and universal application must produce the same result.
     same_as_universal: bool = False
-
-
-def _fee_config(treatment: TransferFeeTreatment) -> PerWalletConfiguration:
-    return PerWalletConfiguration(timezone_name="UTC", transfer_fee_treatment=treatment)
 
 
 def _allocation_config(order: Tuple[Account, ...]) -> PerWalletConfiguration:
@@ -343,32 +339,14 @@ class TestPerWalletTaxEngine(unittest.TestCase):
                 ],
             ),
             _Test(
-                description="Transfer fee paid in the transferred asset, treated as a disposal",
+                # IRS FAQ A81 and A97: the fee is disposed of (no setting needed); A53: its basis is not added to the received units.
+                description="Transfer fee paid in the transferred asset is a disposal; the received units keep their own basis",
                 transactions=[
                     _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "10"),
                     _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "10", "9"),
                     _Out("o1", "2025-03-01T00:00:00+00:00", "Kraken", "200", "9"),
                 ],
-                per_wallet_configuration=_fee_config(TransferFeeTreatment.DISPOSAL),
                 want=[_GainLoss("t1", "i1", "1", "100", "50", False), _GainLoss("o1", "i1", "9", "900", "900", False)],
-            ),
-            _Test(
-                description="Transfer fee paid in the transferred asset, basis carried over to the received units",
-                transactions=[
-                    _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "10"),
-                    _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "10", "9"),
-                    _Out("o1", "2025-03-01T00:00:00+00:00", "Kraken", "200", "9"),
-                ],
-                per_wallet_configuration=_fee_config(TransferFeeTreatment.BASIS_CARRYOVER),
-                want=[_GainLoss("o1", "i1", "9", "1000", "800", False)],
-            ),
-            _Test(
-                description="Transfer fee without an explicit fee treatment: error (unsettled US law, never picked silently)",
-                transactions=[
-                    _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "10"),
-                    _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "10", "9"),
-                ],
-                want_error="have a crypto fee, but 'transfer_fee_treatment' is not defined",
             ),
             _Test(
                 description="Transfer fee spanning two lots (https://github.com/eprbell/rp2/issues/149)",
@@ -379,7 +357,6 @@ class TestPerWalletTaxEngine(unittest.TestCase):
                     _Intra("t1", "2025-01-05T00:00:00+00:00", "Coinbase", "Kraken", "6", "7", "4"),
                     _Out("o1", "2025-01-06T00:00:00+00:00", "Kraken", "7", "4"),
                 ],
-                per_wallet_configuration=_fee_config(TransferFeeTreatment.DISPOSAL),
                 # FIFO: i1 has 5 left after o0: the fee (3, proceeds 3 * 6 = 18) is paid first, with i1 units; the 4 received units are the
                 # remaining 2 of i1 and 2 of i2.
                 want=[
@@ -646,7 +623,6 @@ class TestPerWalletTaxEngine(unittest.TestCase):
         )
         per_wallet_configuration = PerWalletConfiguration(
             timezone_name="UTC",
-            transfer_fee_treatment=TransferFeeTreatment.DISPOSAL,
             unused_basis_allocation_method="fifo",
             unused_basis_allocation_wallet_order=(_COINBASE, _KRAKEN),
         )
@@ -669,6 +645,46 @@ class TestPerWalletTaxEngine(unittest.TestCase):
         for generator in (OpenPositionsGenerator(), FullReportGenerator(), TaxReportUSGenerator()):
             generator.generate(US(), {1970: "fifo"}, {_ASSET: computed_data}, str(output_dir), "per_wallet_", MIN_DATE, MAX_DATE, "en")
         self.assertEqual(len(list(output_dir.glob("per_wallet_*.ods"))), 3)
+
+    # IRS FAQ A81 and A97: the crypto paid as a fee on a transfer between the taxpayer's own wallets is disposed of and gain or loss is
+    # recognized on it; A53: that fee is not a digital asset transaction cost, so it is not added to the basis of the received units.
+    # Reproduction from the review of eprbell/rp2#155 (R02), checked in the actual report cells: buy 1 unit for $100, transfer it when it is
+    # worth $200 paying a 0.1 unit fee, sell the 0.9 received units for $270.
+    def test_transfer_fee_is_a_disposal_in_reports(self) -> None:
+        set_generation_language("en")
+        configuration = Configuration(_CONFIGURATION_PATH, US())
+        input_data = self._create_input_data(
+            configuration,
+            [
+                _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "1"),
+                _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "200", "1", "0.9"),
+                _Out("o1", "2025-03-01T00:00:00+00:00", "Kraken", "300", "0.9"),
+            ],
+        )
+        computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data, _UTC)
+        output_dir = Path("output") / Path("test_per_wallet_tax_engine_fee")
+        shutil.rmtree(output_dir, ignore_errors=True)
+        output_dir.mkdir(parents=True)
+        TaxReportUSGenerator().generate(US(), {1970: "fifo"}, {_ASSET: computed_data}, str(output_dir), "fee_", MIN_DATE, MAX_DATE, "en")
+        report_path = output_dir / Path("fee_fifo_tax_report_us.ods")
+
+        # Columns: amount, asset, date acquired, date sold or transacted, proceeds, cost basis, (f), (g), gain or loss, then the additional
+        # transaction information (type, acquired lot fraction and id, taxable event fraction and id, capital gains type, full timestamp).
+        def data_rows(sheet_name: str) -> List[List[str]]:
+            rows = read_sheet_rows(report_path, sheet_name)
+            self.assertIsNotNone(rows, msg=f"missing sheet {sheet_name}")
+            return [row for row in rows or [] if row[1:2] == [_ASSET]]
+
+        # The fee (MOVE): 0.1 unit of lot i1 disposed of at $200/unit: proceeds $20, basis $10, gain $10, with its source lot and transfer.
+        want_fee_rows: List[List[str]] = [
+            ["0.1", "B1", "01/02/2025", "02/01/2025", "20.0", "10.0", "", "", "10.0", "INTRA / MOVE"]
+            + ["1/1: 0.10000000 of 1.00000000 B1", "i1", "1/1: 0.10000000 of 0.10000000 B1", "t1", "SHORT", "2025-02-01 00:00:00+00:00"]
+        ]
+        self.assertEqual(data_rows("Investment Expenses"), want_fee_rows)
+        # The sale: the 0.9 received units keep their basis ($90) and acquisition date. (Its acquired lot id column is fixed by R17.)
+        want_sale_rows: List[List[str]] = [["0.9", "B1", "01/02/2025", "03/01/2025", "270.0", "90.0", "", "", "180.0", "OUT / SELL"]]
+        got_sale_rows: List[List[str]] = [row[:10] for row in data_rows("Capital Gains")]
+        self.assertEqual(got_sale_rows, want_sale_rows)
 
     def test_artificial_in_transaction_is_not_income(self) -> None:
         configuration = Configuration(_CONFIGURATION_PATH, US())

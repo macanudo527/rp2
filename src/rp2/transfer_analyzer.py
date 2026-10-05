@@ -38,7 +38,6 @@ from rp2.plugin.accounting_method.lifo import AccountingMethod as AccountingMeth
 from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2RuntimeError, RP2TypeError, RP2ValueError
 from rp2.transaction_set import TransactionSet
-from rp2.transfer_fee_treatment import TransferFeeTreatment
 
 # Transactions with the same timestamp are processed in this order (then by row): funds that arrive at a given instant (acquisitions
 # and transfers) are available to disposals that occur at the same instant.
@@ -161,8 +160,9 @@ class PerWalletTransactions:
 # - OutTransactions dispose of lots in their wallet;
 # - IntraTransactions move lots (or parts of lots) from one wallet to another: the "to" side is modeled with artificial InTransactions
 #   that point back to the original lot (from_lot) and preserve its cost basis and acquisition date. The crypto fee (sent - received) is
-#   paid with the first units selected and is either disposed of or carried over into the basis of the received units, depending on
-#   TransferFeeTreatment.
+#   paid with the first units selected and is disposed of: IRS FAQ A81 and A97 (digital-asset FAQs) state that the crypto used to pay for a
+#   transfer between the taxpayer's own wallets is disposed of, with gain or loss, and A53 that it is not a transaction cost that could be
+#   added to the basis of the received units.
 # Lots are selected with the accounting method of the year in which the transaction occurs (the same method is used for transfers and
 # disposals, so transfer semantics and accounting method are always consistent within a year). While doing so, the analyzer pairs every
 # taxable event with the lots it consumed and produces the resulting GainLoss objects.
@@ -176,7 +176,6 @@ class TransferAnalyzer:
         skip_transfer_pointers: bool = False,
         use_local_artificial_ids: bool = False,
         years_2_accounting_methods: Optional[AVLTree[int, AbstractAccountingMethod]] = None,
-        transfer_fee_treatment: TransferFeeTreatment = TransferFeeTreatment.DISPOSAL,
     ):
         self.__configuration = Configuration.type_check("configuration", configuration)
         if not isinstance(transfer_semantics, AbstractAccountingMethod):
@@ -203,7 +202,6 @@ class TransferAnalyzer:
         # the local transfer analysis (which is a throwaway operation).
         self.__use_local_artificial_ids = Configuration.type_check_bool("use_local_artificial_ids", use_local_artificial_ids)
         self.__local_artificial_id_counter = -1
-        self.__transfer_fee_treatment = TransferFeeTreatment.type_check("transfer_fee_treatment", transfer_fee_treatment)
 
     # Returns the (year, method) pairs of the map, sorted by year (AVLTree has no iterator, so its nodes are visited explicitly).
     @staticmethod
@@ -246,16 +244,14 @@ class TransferAnalyzer:
         return self.__configuration.get_new_artificial_id()
 
     # Creates an artificial InTransaction modeling the "to" side of an IntraTransaction. The artificial transaction carries the same per-unit
-    # cost basis (including purchase fees) as from_in_transaction, plus extra_fiat_basis (transfer fee carried over into the basis, if any).
+    # cost basis (including purchase fees) as from_in_transaction.
     # Its timestamp is the transfer's (when the funds become available in the destination wallet) and its cost_basis_timestamp is the
     # acquisition date of the original lot (which determines FIFO order and holding period).
-    def _create_to_in_transaction(
-        self, from_in_transaction: InTransaction, transfer_transaction: IntraTransaction, amount: RP2Decimal, extra_fiat_basis: RP2Decimal = ZERO
-    ) -> InTransaction:
+    def _create_to_in_transaction(self, from_in_transaction: InTransaction, transfer_transaction: IntraTransaction, amount: RP2Decimal) -> InTransaction:
         artificial_id = self._new_artificial_id()
 
         fraction = amount / from_in_transaction.crypto_in
-        fiat_fee = from_in_transaction.fiat_fee * fraction + extra_fiat_basis
+        fiat_fee = from_in_transaction.fiat_fee * fraction
         result = InTransaction(
             configuration=self.__configuration,
             timestamp=transfer_transaction.timestamp.isoformat(),
@@ -372,7 +368,9 @@ class TransferAnalyzer:
                 f"(missing {missing_amount} of {transaction.crypto_sent} {transaction.asset}): {transaction}"
             )
         fee_pieces, received_pieces = self._split_fee_and_received_pieces(pieces, transaction.crypto_fee)
-        fee_fiat_basis = self._process_fee_pieces(transaction, fee_pieces, gain_loss_list)
+        # The fee is disposed of: each fee piece is paired with its lot.
+        for piece in fee_pieces:
+            gain_loss_list.append(GainLoss(self.__configuration, piece.amount, transaction, piece.acquired_lot))
         for piece in received_pieces:
             if transaction.is_self_transfer():
                 # Self transfer (loop): the received units stay where they were.
@@ -380,9 +378,7 @@ class TransferAnalyzer:
                     piece.acquired_lot, from_per_wallet_transactions.get_actual_amount(piece.acquired_lot) + piece.amount
                 )
             else:
-                # Each received piece gets a share of the carried-over fee basis proportional to its amount.
-                extra_fiat_basis = fee_fiat_basis * piece.amount / transaction.crypto_received
-                self._deliver_received_piece(to_per_wallet_transactions, to_account, transaction, piece, extra_fiat_basis)
+                self._deliver_received_piece(to_per_wallet_transactions, to_account, transaction, piece)
 
     # Splits the lot pieces taken for a transfer into fee pieces and received pieces. The fee is taken from the first pieces, like universal
     # application does (it disposes of the first units selected by the accounting method to pay the fee).
@@ -400,21 +396,6 @@ class TransferAnalyzer:
                 received_pieces.append(_LotPiece(piece.acquired_lot, piece.amount - fee_part))
         return fee_pieces, received_pieces
 
-    # Applies the transfer fee treatment to the fee pieces. DISPOSAL: each fee piece is a disposal, paired with its lot. BASIS_CARRYOVER: no
-    # gain/loss; returns the cost basis of the fee pieces, to be added to the received units (zero with DISPOSAL).
-    def _process_fee_pieces(self, transaction: IntraTransaction, fee_pieces: List[_LotPiece], gain_loss_list: List[GainLoss]) -> RP2Decimal:
-        if self.__transfer_fee_treatment == TransferFeeTreatment.DISPOSAL:
-            for piece in fee_pieces:
-                gain_loss_list.append(GainLoss(self.__configuration, piece.amount, transaction, piece.acquired_lot))
-            return ZERO
-        fee_fiat_basis = RP2Decimal(sum((piece.acquired_lot.fiat_in_with_fee * piece.amount / piece.acquired_lot.crypto_in for piece in fee_pieces), ZERO))
-        if fee_fiat_basis > ZERO and transaction.is_self_transfer():
-            raise RP2ValueError(
-                f"Transfer fee treatment '{self.__transfer_fee_treatment.name.lower()}' cannot be applied to a self-transfer with a fee (there are no "
-                f"received units in another wallet to carry the fee basis over to): {transaction}"
-            )
-        return fee_fiat_basis
-
     # Adds a received lot piece to the destination wallet: normally as a new artificial InTransaction; at the end of a round trip
     # (e.g. A->B->A) by returning the units to the lot they left from.
     def _deliver_received_piece(
@@ -423,12 +404,10 @@ class TransferAnalyzer:
         to_account: Account,
         transaction: IntraTransaction,
         piece: _LotPiece,
-        extra_fiat_basis: RP2Decimal,
     ) -> None:
-        if self.__transfer_fee_treatment == TransferFeeTreatment.DISPOSAL and self._is_transaction_cycle(piece.acquired_lot, transaction):
+        if self._is_transaction_cycle(piece.acquired_lot, transaction):
             # Transaction cycle detected: the to_account has already been visited. Return the amount to the start-of-cycle lot (which has the
-            # same per-unit basis and acquisition date). With BASIS_CARRYOVER the per-unit basis of the moving units may have grown along the
-            # cycle, so a new artificial lot is created instead.
+            # same per-unit basis and acquisition date, since transfers never change the basis of the units they move).
             start_of_cycle: InTransaction = piece.acquired_lot.originates_from[to_account]
             returned_amount = to_per_wallet_transactions.get_actual_amount(start_of_cycle) + piece.amount
             if returned_amount > start_of_cycle.crypto_in:
@@ -438,7 +417,7 @@ class TransferAnalyzer:
                 )
             to_per_wallet_transactions.restore_actual_amount(start_of_cycle, returned_amount)
             return
-        to_per_wallet_transactions.add_acquired_lot(self._create_to_in_transaction(piece.acquired_lot, transaction, piece.amount, extra_fiat_basis))
+        to_per_wallet_transactions.add_acquired_lot(self._create_to_in_transaction(piece.acquired_lot, transaction, piece.amount))
 
     # Performs transfer analysis on the universal InputData and returns one InputData per wallet.
     def analyze(self) -> Dict[Account, InputData]:

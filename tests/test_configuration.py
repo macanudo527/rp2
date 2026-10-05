@@ -102,7 +102,6 @@ class TestConfiguration(unittest.TestCase):
         configuration = self._test_config(
             self._per_wallet_config(
                 {
-                    "transfer_fee_treatment": "basis_carryover",
                     "unused_basis_allocation_method": "fifo",
                     "unused_basis_allocation_wallet_order": "Coinbase/Bob, Coinbase Pro/Bob",
                     "unused_basis_allocation_wallet_order.b1": "Coinbase Pro/Bob, Coinbase/Bob",
@@ -130,6 +129,9 @@ class TestConfiguration(unittest.TestCase):
 
         with self.assertRaisesRegex(RP2ValueError, "refers to an unknown asset 'b9'"):
             self._test_config(self._per_wallet_config({"unused_basis_allocation_method.B9": "fifo"}))
+        # Crypto fees on transfers between own wallets are always disposals (IRS FAQ A81 and A97): there is no setting for them anymore.
+        with self.assertRaisesRegex(RP2ValueError, "invalid field 'transfer_fee_treatment'"):
+            self._test_config(self._per_wallet_config({"transfer_fee_treatment": "disposal"}))
         with self.assertRaisesRegex(RP2ValueError, "invalid field 'timezone.b1'"):
             self._test_config(self._per_wallet_config({"timezone.B1": "UTC"}))
         with self.assertRaisesRegex(RP2ValueError, "the unused basis allocation of B1 has a method or a wallet order, but not both"):

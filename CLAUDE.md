@@ -95,8 +95,8 @@ tax_engine.compute_tax_per_wallet():
     (same timestamp: In, Intra, Out, then row), per wallet, with the accounting method of each year:
       InTransaction → lot added to its wallet (earn types → income GainLoss)
       OutTransaction → lots taken from its wallet only → GainLoss per lot piece
-      IntraTransaction → fee paid first (disposal GainLoss or basis carryover, per [country.us]
-        transfer_fee_treatment), received units become artificial InTransactions in the destination
+      IntraTransaction → fee paid first (always a disposal GainLoss: IRS FAQ A81/A97), received units
+        become artificial InTransactions in the destination
         (cycles A→B→A return units to the original lot)
   ↓
 ComputedData (asset → GainLossSet: universal pre-switch + per-wallet post-switch)
@@ -131,9 +131,8 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 | `TransferAnalyzer` | `transfer_analyzer.py` | Per-wallet engine: decomposes `InputData` into per-wallet `InputData` and pairs taxable events with lots of their wallet (`analyze_and_pair()`) |
 | `AcquisitionDateFifo` | `acquisition_date_fifo.py` | Per-wallet FIFO: orders lots by original acquisition date (`cost_basis_timestamp`), not arrival date |
 | `UnusedBasisAllocator` | `unused_basis_allocator.py` | [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) global allocation of unused lots to wallets at the per-wallet switch |
-| `PerWalletConfiguration` | `per_wallet_configuration.py` | per-wallet fields of the `[country.<code>]` config section: timezone, transfer fee treatment, unused basis allocation rule (default plus per-asset overrides, `<field>.<asset>`) |
+| `PerWalletConfiguration` | `per_wallet_configuration.py` | per-wallet fields of the `[country.<code>]` config section: timezone, unused basis allocation rule (default plus per-asset overrides, `<field>.<asset>`) |
 | `ApplicationPolicy` | `application_policy.py` | Per-year allowed/default `ApplicationMode` (universal, per-wallet) of a country (`AbstractCountry.get_application_policy()`); resolves the user's optional `application_mode` and the per-wallet switch year |
-| `TransferFeeTreatment` | `transfer_fee_treatment.py` | `DISPOSAL` or `BASIS_CARRYOVER` for crypto fees on transfers between own wallets (unsettled US law: user must choose) |
 | `GlobalAllocator` | `global_allocation.py` | Earlier, unwired prototype of global allocation (superseded by `UnusedBasisAllocator`) |
 
 ### Design Conventions

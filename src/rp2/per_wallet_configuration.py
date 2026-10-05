@@ -20,7 +20,6 @@ from dateutil import tz
 
 from rp2.account import Account
 from rp2.rp2_error import RP2TypeError, RP2ValueError
-from rp2.transfer_fee_treatment import TransferFeeTreatment
 
 
 # User choices for per-wallet application: the per-wallet fields of the country section of the configuration file (e.g. [country.us]).
@@ -30,8 +29,6 @@ from rp2.transfer_fee_treatment import TransferFeeTreatment
 class PerWalletConfiguration:
     # IANA time zone (e.g. America/New_York) in which the start of the first per-wallet year is measured.
     timezone_name: str
-    # How crypto fees on transfers between the taxpayer's wallets are treated (only needed if such fees exist after the switch).
-    transfer_fee_treatment: Optional[TransferFeeTreatment] = None
     # Rev. Proc. 2024-28 global allocation of unused basis: accounting method used to order the unused lots (e.g. fifo) and order in
     # which wallets are filled with them (only needed if more than one wallet holds funds at the switch).
     unused_basis_allocation_method: Optional[str] = None
@@ -46,8 +43,6 @@ class PerWalletConfiguration:
             raise RP2ValueError("Per-wallet configuration: 'timezone' cannot be empty")
         if tz.gettz(self.timezone_name) is None:
             raise RP2ValueError(f"Per-wallet configuration: unknown timezone '{self.timezone_name}' (use an IANA name, e.g. America/New_York)")
-        if self.transfer_fee_treatment is not None:
-            TransferFeeTreatment.type_check("transfer_fee_treatment", self.transfer_fee_treatment)
         for wallet_order in [self.unused_basis_allocation_wallet_order, *self.asset_2_unused_basis_allocation_wallet_order.values()]:
             for account in wallet_order:
                 if not isinstance(account, Account):

@@ -50,7 +50,6 @@ from rp2.rp2_error import RP2ValueError
 from rp2.tax_engine import compute_tax, compute_tax_per_wallet
 from rp2.transaction_set import TransactionSet
 from rp2.transfer_analyzer import TransferAnalyzer
-from rp2.transfer_fee_treatment import TransferFeeTreatment
 
 _ASSET = "B1"
 _CONFIGURATION_PATH = "./config/test_data.ini"
@@ -215,21 +214,11 @@ class TestPerWalletProperties(unittest.TestCase):
                 self.assertEqual(held, balances.get(account, ZERO), msg=f"{account} after {length} transactions")
 
     @_SETTINGS
-    @given(
-        steps=_histories(_ACCOUNTS),
-        method_name=st.sampled_from(sorted(_METHODS)),
-        treatment=st.sampled_from(list(TransferFeeTreatment)),
-    )
-    def test_basis_and_lot_amounts_are_conserved(self, steps: List[_Step], method_name: str, treatment: TransferFeeTreatment) -> None:
+    @given(steps=_histories(_ACCOUNTS), method_name=st.sampled_from(sorted(_METHODS)))
+    def test_basis_and_lot_amounts_are_conserved(self, steps: List[_Step], method_name: str) -> None:
         configuration = Configuration(_CONFIGURATION_PATH, US())
         input_data = _create_input_data(configuration, steps)
-        try:
-            result = TransferAnalyzer(configuration, _METHODS[method_name], input_data, transfer_fee_treatment=treatment).analyze_and_pair()
-        except RP2ValueError as error:
-            # The only legitimate failure: basis carryover on a self-transfer with a fee (no destination lot to carry the basis to).
-            self.assertEqual(treatment, TransferFeeTreatment.BASIS_CARRYOVER)
-            self.assertIn("cannot be applied to a self-transfer with a fee", str(error))
-            return
+        result = TransferAnalyzer(configuration, _METHODS[method_name], input_data).analyze_and_pair()
 
         # Amounts and basis still held, per original lot.
         held_amount: Dict[InTransaction, RP2Decimal] = {}
@@ -258,28 +247,19 @@ class TestPerWalletProperties(unittest.TestCase):
         acquired_basis = RP2Decimal(sum((lot.fiat_in_with_fee for lot in input_data.unfiltered_in_transaction_set), ZERO))  # type: ignore
         self.assertLess(abs(acquired_basis - disposed_basis - held_basis), _TOLERANCE * max(acquired_basis, RP2Decimal("1")))
 
-        # Crypto fees of all transfers (with BASIS_CARRYOVER these units leave their lots without a gain/loss).
-        total_transfer_fees = RP2Decimal(sum((step.fee for step in steps if step.kind == "intra"), ZERO))
+        # Every unit of every input lot is either still held or disposed of with a gain/loss (transfer fees included: they are disposals).
         for entry in input_data.unfiltered_in_transaction_set:
             lot = entry
             assert isinstance(lot, InTransaction)
             accounted = disposed_amount.get(lot, ZERO) + held_amount.get(lot, ZERO)
-            if treatment == TransferFeeTreatment.DISPOSAL:
-                self.assertEqual(accounted, lot.crypto_in, msg=f"lot {lot.internal_id}")
-            else:
-                # Carried-over fee units leave the lot without a gain/loss.
-                self.assertLessEqual(accounted, lot.crypto_in)
-        if treatment == TransferFeeTreatment.BASIS_CARRYOVER:
-            total_accounted = RP2Decimal(sum(disposed_amount.values(), ZERO)) + RP2Decimal(sum(held_amount.values(), ZERO))
-            total_in = RP2Decimal(sum((lot.crypto_in for lot in input_data.unfiltered_in_transaction_set), ZERO))  # type: ignore
-            self.assertEqual(total_accounted + total_transfer_fees, total_in)
+            self.assertEqual(accounted, lot.crypto_in, msg=f"lot {lot.internal_id}")
 
     @_SETTINGS
     @given(steps=_histories([_ACCOUNTS[0]]), method_name=st.sampled_from(sorted(_METHODS)))
     def test_single_wallet_per_wallet_equals_universal(self, steps: List[_Step], method_name: str) -> None:
         configuration = Configuration(_CONFIGURATION_PATH, US())
         input_data = _create_input_data(configuration, steps)
-        per_wallet_configuration = PerWalletConfiguration(timezone_name="UTC", transfer_fee_treatment=TransferFeeTreatment.DISPOSAL)
+        per_wallet_configuration = PerWalletConfiguration(timezone_name="UTC")
         per_wallet = compute_tax_per_wallet(configuration, _accounting_engine(_METHODS[method_name]), input_data, per_wallet_configuration)
         universal = compute_tax(configuration, _accounting_engine(_METHODS[method_name]), input_data)
         per_wallet_gain_losses = [gain_loss for gain_loss in per_wallet.gain_loss_set if isinstance(gain_loss, GainLoss)]
@@ -300,7 +280,7 @@ class TestPerWalletProperties(unittest.TestCase):
         with self.assertRaisesRegex(RP2ValueError, "not supported for country 'jp'"):
             compute_tax_per_wallet(jp_configuration, _accounting_engine(AccountingMethodFIFO()), input_data, PerWalletConfiguration(timezone_name="Asia/Tokyo"))
         # ... and running it anyway on the same objects (it mutates to_lots of the input lots) must not change universal results.
-        TransferAnalyzer(jp_configuration, AccountingMethodFIFO(), input_data, transfer_fee_treatment=TransferFeeTreatment.DISPOSAL).analyze_and_pair()
+        TransferAnalyzer(jp_configuration, AccountingMethodFIFO(), input_data).analyze_and_pair()
         self.assertEqual(before, _universal_gain_losses(jp_configuration, input_data))
 
 

@@ -41,7 +41,6 @@ from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2RuntimeError, RP2ValueError
 from rp2.transaction_set import TransactionSet
 from rp2.transfer_analyzer import TransferAnalyzer
-from rp2.transfer_fee_treatment import TransferFeeTreatment
 from rp2.unused_basis_allocator import UnusedBasisAllocator, UnusedLot
 
 
@@ -257,9 +256,7 @@ def compute_tax_per_wallet(
             ).allocate()
         # Phase 3: per-wallet application after the switch.
         LOGGER.info("%s: per-wallet application from %s (%d transactions)", input_data.asset, switch_timestamp, len(per_wallet_transactions))
-        per_wallet_result = _compute_per_wallet_tax(
-            configuration, accounting_engine, input_data.asset, start_year, per_wallet_transactions, allocated_lots, per_wallet_configuration
-        )
+        per_wallet_result = _compute_per_wallet_tax(configuration, accounting_engine, input_data.asset, start_year, per_wallet_transactions, allocated_lots)
 
     taxable_event_set = TransactionSet(configuration, "MIXED", input_data.asset, MIN_DATE, MAX_DATE)
     for transaction in universal_result.taxable_events + per_wallet_result.taxable_events:
@@ -308,9 +305,7 @@ def _compute_per_wallet_tax(
     start_year: int,
     transactions: List[AbstractTransaction],
     allocated_lots: List[InTransaction],
-    per_wallet_configuration: PerWalletConfiguration,
 ) -> _TaxResult:
-    transfer_fee_treatment = _get_transfer_fee_treatment(transactions, per_wallet_configuration)
     input_data = _create_input_data(configuration, asset, transactions + cast(List[AbstractTransaction], allocated_lots))
     start_year_accounting_method = accounting_engine.years_2_methods.find_max_value_less_than(start_year)
     if start_year_accounting_method is None:
@@ -320,15 +315,9 @@ def _compute_per_wallet_tax(
         start_year_accounting_method,
         input_data,
         years_2_accounting_methods=accounting_engine.years_2_methods,
-        transfer_fee_treatment=transfer_fee_treatment,
     ).analyze_and_pair()
     LOGGER.info("%s: per-wallet application: found %d wallets", asset, len(transfer_analysis_result.wallet_2_input_data))
-    # With BASIS_CARRYOVER, transfer fees are not taxable events.
-    taxable_events = [
-        transaction
-        for transaction in transactions
-        if transaction.is_taxable() and not (isinstance(transaction, IntraTransaction) and transfer_fee_treatment == TransferFeeTreatment.BASIS_CARRYOVER)
-    ]
+    taxable_events = [transaction for transaction in transactions if transaction.is_taxable()]
     return _TaxResult(taxable_events, transfer_analysis_result.gain_loss_list)
 
 
@@ -409,19 +398,3 @@ def _check_balances_match_unused_lots(account_2_balance: Dict[Account, RP2Decima
     total_unused = RP2Decimal(sum((unused_lot.amount for unused_lot in unused_lots), ZERO))
     if not RP2Decimal.is_equal_within_precision(total_balance, total_unused, CRYPTO_BALANCE_DECIMAL_MASK):
         raise RP2ValueError(f"Total wallet balance ({total_balance}) doesn't match unused lot amount ({total_unused}) at the switch to per-wallet application")
-
-
-# The configured transfer fee treatment. It's mandatory only if some transfer after the switch actually has a crypto fee (unsettled US law:
-# RP2 never picks a treatment silently).
-def _get_transfer_fee_treatment(transactions: List[AbstractTransaction], per_wallet_configuration: PerWalletConfiguration) -> TransferFeeTreatment:
-    if per_wallet_configuration.transfer_fee_treatment is not None:
-        return per_wallet_configuration.transfer_fee_treatment
-    transfers_with_fee = [transaction for transaction in transactions if isinstance(transaction, IntraTransaction) and transaction.crypto_fee > ZERO]
-    if transfers_with_fee:
-        raise RP2ValueError(
-            f"{len(transfers_with_fee)} transfer(s) between wallets have a crypto fee, but 'transfer_fee_treatment' is not defined in the country "
-            f"section of the configuration file (valid values: {', '.join(treatment.value for treatment in TransferFeeTreatment)}). "
-            f"First one: {transfers_with_fee[0]}"
-        )
-    # No transfer has a fee: the treatment is irrelevant.
-    return TransferFeeTreatment.DISPOSAL

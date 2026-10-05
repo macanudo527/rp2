@@ -30,7 +30,6 @@ from rp2.configuration_schema import CONFIGURATION_SCHEMA
 from rp2.per_wallet_configuration import PerWalletConfiguration
 from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2TypeError, RP2ValueError
-from rp2.transfer_fee_treatment import TransferFeeTreatment
 
 MIN_DATE: date = date(1970, 1, 1)
 MAX_DATE: date = date(9999, 12, 31)
@@ -73,7 +72,6 @@ class Keyword(Enum):
     TO_EXCHANGE = "to_exchange"
     TO_HOLDER = "to_holder"
     TRANSACTION_TYPE = "transaction_type"
-    TRANSFER_FEE_TREATMENT = "transfer_fee_treatment"
     UNIQUE_ID = "unique_id"
     UNUSED_BASIS_ALLOCATION_METHOD = "unused_basis_allocation_method"
     UNUSED_BASIS_ALLOCATION_WALLET_ORDER = "unused_basis_allocation_wallet_order"
@@ -83,7 +81,6 @@ class Keyword(Enum):
 # for countries whose application policy allows it.
 _PER_WALLET_FIELDS: Set[str] = {
     Keyword.TIMEZONE.value,
-    Keyword.TRANSFER_FEE_TREATMENT.value,
     Keyword.UNUSED_BASIS_ALLOCATION_METHOD.value,
     Keyword.UNUSED_BASIS_ALLOCATION_WALLET_ORDER.value,
 }
@@ -382,16 +379,12 @@ class Configuration:  # pylint: disable=too-many-public-methods
                 asset_2_wallet_order[asset] = self._parse_wallet_order(value, section.name, configuration_path)
         if Keyword.TIMEZONE.value not in section:
             raise RP2ValueError(f"{configuration_path}: section '{section.name}' doesn't contain mandatory field '{Keyword.TIMEZONE.value}'")
-        transfer_fee_treatment: Optional[TransferFeeTreatment] = None
-        if Keyword.TRANSFER_FEE_TREATMENT.value in section:
-            transfer_fee_treatment = TransferFeeTreatment.from_string(section[Keyword.TRANSFER_FEE_TREATMENT.value])
         wallet_order: Tuple[Account, ...] = ()
         if Keyword.UNUSED_BASIS_ALLOCATION_WALLET_ORDER.value in section:
             wallet_order = self._parse_wallet_order(section[Keyword.UNUSED_BASIS_ALLOCATION_WALLET_ORDER.value], section.name, configuration_path)
         try:
             return PerWalletConfiguration(
                 timezone_name=section[Keyword.TIMEZONE.value].strip(),
-                transfer_fee_treatment=transfer_fee_treatment,
                 unused_basis_allocation_method=section.get(Keyword.UNUSED_BASIS_ALLOCATION_METHOD.value, "").strip() or None,
                 unused_basis_allocation_wallet_order=wallet_order,
                 asset_2_unused_basis_allocation_method=asset_2_allocation_method,
