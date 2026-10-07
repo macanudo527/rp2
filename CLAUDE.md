@@ -97,7 +97,7 @@ tax_engine.compute_tax_per_wallet():
       OutTransaction → lots taken from its wallet only → GainLoss per lot piece
       IntraTransaction → fee paid first (always a disposal GainLoss: IRS FAQ A81/A97), received units
         become artificial InTransactions in the destination
-        (cycles A→B→A return units to the original lot)
+        (cycles A→B→A return units to the lot they left A from, e.g. the lot allocated to A at the switch)
   ↓
 ComputedData (asset → GainLossSet: universal pre-switch + per-wallet post-switch)
   ↓
@@ -199,7 +199,7 @@ When two transactions share the same timestamp, their relative order is determin
 All accounting methods (FIFO, LIFO, HIFO, LOFO) operate on a single global pool of lots per asset, regardless of which exchange or wallet the lots are held in. Per-wallet application is selected per year by the country's `get_application_policy()` (currently only the US allows it, from 2025) and needs the `[country.us]` config section. Balance enforcement IS per-account (via `BalanceSet`), but lot selection is global in the universal path.
 
 ### Artificial InTransactions (per-wallet path only)
-`TransferAnalyzer` creates artificial `InTransaction` objects to model the "to" side of each `IntraTransaction`. These artificial transactions exist only in per-wallet `InputData` objects — they are never present in the original universal `InputData` returned by `ods_parser.py`. Identifying fields: `from_lot is not None`. The fields `from_lot`, `to_lots`, and `originates_from` are only meaningful on artificial InTransactions.
+`TransferAnalyzer` creates artificial `InTransaction` objects to model the "to" side of each `IntraTransaction`. These artificial transactions exist only in per-wallet `InputData` objects — they are never present in the original universal `InputData` returned by `ods_parser.py`. Identifying fields: `from_lot is not None`. The fields `from_lot`, `to_lots`, and `originates_from` are only meaningful on artificial InTransactions. `from_lot` is the cost-basis history (it continues past an allocated lot to the input lot bought before the switch); `originates_from` is the lot each earlier wallet actually held, used to return units at the end of a round trip, and never goes past an allocated lot.
 
 ### cost_basis_timestamp and LTCG (per-wallet path)
 `InTransaction.cost_basis_timestamp` is the original acquisition date: artificial InTransactions are created with the timestamp of their `original_lot` (the root of the `from_lot` chain). `GainLoss.is_long_term_capital_gains()` uses `cost_basis_timestamp` (not `timestamp`) so that the holding period survives wallet-to-wallet transfers. In the universal path all InTransactions are real (no `from_lot`), so `cost_basis_timestamp` falls back to `timestamp` and behavior is unchanged.

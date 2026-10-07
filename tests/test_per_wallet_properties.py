@@ -18,12 +18,15 @@
 # - cost basis is conserved: basis acquired = basis disposed of + basis still held (with either transfer fee treatment);
 # - no lot fraction is consumed twice: for every input lot, amount disposed of + amount still held (+ transfer fees, if carried over) equals
 #   the lot amount;
+# - the same three invariants for histories that start before the switch to per-wallet application and continue after it (unused basis
+#   allocation at the switch, then transfers that often go back and forth between wallets);
 # - with a single wallet, per-wallet and universal application produce the same gain/losses;
 # - universal (e.g. JP) results are not affected by running the per-wallet code on the same input.
 
 import unittest
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, NamedTuple, Set, Tuple
+from unittest.mock import patch
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -49,7 +52,7 @@ from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2ValueError
 from rp2.tax_engine import compute_tax, compute_tax_per_wallet
 from rp2.transaction_set import TransactionSet
-from rp2.transfer_analyzer import TransferAnalyzer
+from rp2.transfer_analyzer import TransferAnalysisResult, TransferAnalyzer
 
 _ASSET = "B1"
 _CONFIGURATION_PATH = "./config/test_data.ini"
@@ -80,11 +83,15 @@ def _amount(draw: st.DrawFn, maximum: RP2Decimal) -> RP2Decimal:
     return RP2Decimal(draw(st.integers(min_value=1, max_value=int(maximum / _QUANTUM)))) * _QUANTUM
 
 
+# Random valid histories (no wallet ever goes negative). With round_trips, a transfer often sends funds back to the wallet they last came
+# from (e.g. A -> B, then B -> A), to exercise the code that returns them to the lot they left from.
 @st.composite
-def _histories(draw: st.DrawFn, accounts: List[Account]) -> List[_Step]:
+def _histories(draw: st.DrawFn, accounts: List[Account], round_trips: bool = False, min_steps: int = 1) -> List[_Step]:
     balances: Dict[Account, RP2Decimal] = {account: ZERO for account in accounts}
+    # The wallet that last sent funds to each wallet.
+    last_sender: Dict[Account, Account] = {}
     steps: List[_Step] = []
-    for _ in range(draw(st.integers(min_value=1, max_value=18))):
+    for _ in range(draw(st.integers(min_value=min_steps, max_value=18))):
         funded = [account for account in accounts if balances[account] >= _QUANTUM * RP2Decimal("2")]
         kind = draw(st.sampled_from(["in", "out", "intra"])) if funded else "in"
         price = RP2Decimal(draw(st.integers(min_value=1, max_value=500)))
@@ -104,6 +111,9 @@ def _histories(draw: st.DrawFn, accounts: List[Account]) -> List[_Step]:
         else:
             account = draw(st.sampled_from(funded))
             to_account = draw(st.sampled_from(accounts))
+            if round_trips and account in last_sender and draw(st.booleans()):
+                to_account = last_sender[account]
+            last_sender[to_account] = account
             sent = _amount(draw, balances[account])
             fee = ZERO
             if draw(st.booleans()) and sent > _QUANTUM:
@@ -114,10 +124,22 @@ def _histories(draw: st.DrawFn, accounts: List[Account]) -> List[_Step]:
     return steps
 
 
-def _create_input_data(configuration: Configuration, steps: List[_Step]) -> InputData:
+# Steps are one hour apart, starting at _START. If steps_before_switch is given, that many steps happen in 2024 instead (one hour apart,
+# ending on December 31st), so that the history crosses the switch to per-wallet application (January 1st, 2025).
+# A history that crosses the switch to per-wallet application, and how many of its steps happen before the switch (at least one step
+# happens after it).
+@st.composite
+def _histories_crossing_the_switch(draw: st.DrawFn) -> Tuple[List[_Step], int]:
+    steps = draw(_histories(_ACCOUNTS, round_trips=True, min_steps=2))
+    return steps, draw(st.integers(min_value=1, max_value=len(steps) - 1))
+
+
+def _create_input_data(configuration: Configuration, steps: List[_Step], steps_before_switch: int = 0) -> InputData:
     sets = {name: TransactionSet(configuration, name, _ASSET) for name in ("IN", "OUT", "INTRA")}
     for row, step in enumerate(steps, start=1):
-        timestamp = (_START + timedelta(hours=row)).isoformat()
+        # Before the switch: up to 2024-12-31 23:00. After: from 2025-01-01 01:00 on.
+        hours = row - steps_before_switch - 1 if row <= steps_before_switch else row - steps_before_switch
+        timestamp = (_START + timedelta(hours=hours)).isoformat()
         if step.kind == "in":
             sets["IN"].add_entry(
                 InTransaction(
@@ -253,6 +275,64 @@ class TestPerWalletProperties(unittest.TestCase):
             assert isinstance(lot, InTransaction)
             accounted = disposed_amount.get(lot, ZERO) + held_amount.get(lot, ZERO)
             self.assertEqual(accounted, lot.crypto_in, msg=f"lot {lot.internal_id}")
+
+    # R03 from the review of eprbell/rp2#155: the lots allocated at the switch must survive transfers back and forth between wallets. Checks
+    # the invariants above on histories that start in 2024 (universal application), get their unused basis allocated to the wallets at the
+    # switch, and continue in 2025 (per-wallet application), often sending funds back where they came from.
+    # Example of what used to fail: buy 10 units in A in 2024, move 4 A -> B and back in 2025: "returned amount exceeds its crypto_in".
+    @_SETTINGS
+    @given(history=_histories_crossing_the_switch(), method_name=st.sampled_from(sorted(_METHODS)))
+    def test_invariants_hold_across_the_switch(self, history: Tuple[List[_Step], int], method_name: str) -> None:
+        steps, steps_before_switch = history
+        configuration = Configuration(_CONFIGURATION_PATH, US())
+        input_data = _create_input_data(configuration, steps, steps_before_switch)
+        per_wallet_configuration = PerWalletConfiguration(
+            timezone_name="UTC", unused_basis_allocation_method="fifo", unused_basis_allocation_wallet_order=tuple(_ACCOUNTS)
+        )
+        # Capture the result of the TransferAnalyzer run inside compute_tax_per_wallet(), to see what each wallet holds at the end.
+        results: List[TransferAnalysisResult] = []
+        analyze_and_pair = TransferAnalyzer.analyze_and_pair
+
+        def capture(analyzer: TransferAnalyzer) -> TransferAnalysisResult:
+            result = analyze_and_pair(analyzer)
+            results.append(result)
+            return result
+
+        with patch.object(TransferAnalyzer, "analyze_and_pair", capture):
+            computed_data = compute_tax_per_wallet(
+                configuration, _accounting_engine(_METHODS[method_name]), input_data, per_wallet_configuration, AccountingMethodFIFO()
+            )
+        self.assertEqual(len(results), 1)
+
+        # Each wallet holds exactly its balance, and remember what is held per input lot.
+        balances = _balances(steps)
+        held_amount: Dict[InTransaction, RP2Decimal] = {}
+        held_basis = ZERO
+        for account, wallet_input_data in results[0].wallet_2_input_data.items():
+            wallet_amount = ZERO
+            for entry in wallet_input_data.unfiltered_in_transaction_set:
+                assert isinstance(entry, InTransaction)
+                amount = _get_actual_amount(wallet_input_data, entry)
+                wallet_amount += amount
+                held_amount[entry.original_lot] = held_amount.get(entry.original_lot, ZERO) + amount
+                held_basis += entry.fiat_in_with_fee * amount / entry.crypto_in
+            self.assertEqual(wallet_amount, balances.get(account, ZERO), msg=f"{account}")
+
+        # Every unit of every input lot is either still held or disposed of (before or after the switch), and so is its basis.
+        disposed_amount: Dict[InTransaction, RP2Decimal] = {}
+        disposed_basis = ZERO
+        for gain_loss in computed_data.gain_loss_set:
+            assert isinstance(gain_loss, GainLoss)
+            if gain_loss.acquired_lot is None:
+                continue
+            original_lot = gain_loss.acquired_lot.original_lot
+            disposed_amount[original_lot] = disposed_amount.get(original_lot, ZERO) + gain_loss.crypto_amount
+            disposed_basis += gain_loss.fiat_cost_basis
+        for entry in input_data.unfiltered_in_transaction_set:
+            assert isinstance(entry, InTransaction)
+            self.assertEqual(disposed_amount.get(entry, ZERO) + held_amount.get(entry, ZERO), entry.crypto_in, msg=f"lot {entry.internal_id}")
+        acquired_basis = RP2Decimal(sum((lot.fiat_in_with_fee for lot in input_data.unfiltered_in_transaction_set), ZERO))  # type: ignore
+        self.assertLess(abs(acquired_basis - disposed_basis - held_basis), _TOLERANCE * max(acquired_basis, RP2Decimal("1")))
 
     @_SETTINGS
     @given(steps=_histories([_ACCOUNTS[0]]), method_name=st.sampled_from(sorted(_METHODS)))

@@ -25,6 +25,7 @@ import unittest
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple
+from unittest.mock import patch
 
 from ods_diff import read_sheet_rows
 from prezzemolo.avl_tree import AVLTree
@@ -43,15 +44,18 @@ from rp2.out_transaction import OutTransaction
 from rp2.per_wallet_configuration import PerWalletConfiguration
 from rp2.plugin.accounting_method.fifo import AccountingMethod as AccountingMethodFIFO
 from rp2.plugin.accounting_method.hifo import AccountingMethod as AccountingMethodHIFO
+from rp2.plugin.accounting_method.lifo import AccountingMethod as AccountingMethodLIFO
+from rp2.plugin.accounting_method.lofo import AccountingMethod as AccountingMethodLOFO
 from rp2.plugin.country.jp import JP
 from rp2.plugin.country.us import US
 from rp2.plugin.report.open_positions import Generator as OpenPositionsGenerator
 from rp2.plugin.report.rp2_full_report import Generator as FullReportGenerator
 from rp2.plugin.report.us.tax_report_us import Generator as TaxReportUSGenerator
-from rp2.rp2_decimal import RP2Decimal
+from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2ValueError
 from rp2.tax_engine import compute_tax, compute_tax_per_wallet
 from rp2.transaction_set import TransactionSet
+from rp2.transfer_analyzer import TransferAnalysisResult, TransferAnalyzer
 
 _ASSET = "B1"
 _CONFIGURATION_PATH = "./config/test_data.ini"
@@ -100,6 +104,8 @@ class _GainLoss(NamedTuple):
 
 
 _GainLossTuple = Tuple[str, Optional[str], RP2Decimal, RP2Decimal, RP2Decimal, bool]
+# What a wallet holds at the end: (wallet, original lot, amount, cost basis, acquisition date).
+_Holding = Tuple[str, str, RP2Decimal, RP2Decimal, str]
 
 
 def _sorted(gain_losses: List[_GainLossTuple]) -> List[_GainLossTuple]:
@@ -125,6 +131,7 @@ def _allocation_config(order: Tuple[Account, ...]) -> PerWalletConfiguration:
 
 _COINBASE = Account("Coinbase", "Bob")
 _KRAKEN = Account("Kraken", "Bob")
+_BLOCKFI = Account("BlockFi", "Bob")
 
 
 class TestPerWalletTaxEngine(unittest.TestCase):
@@ -586,6 +593,181 @@ class TestPerWalletTaxEngine(unittest.TestCase):
         for test in tests:
             with self.subTest(name=test.description):
                 self._run_test(test)
+
+    # Runs per-wallet application with an unused basis allocation at the switch (wallet order: Coinbase, Kraken, BlockFi) and returns its
+    # gain/losses and what each wallet holds at the end, as (wallet, original lot, amount, cost basis, acquisition date), merged by
+    # original lot. The holdings come from the TransferAnalyzer run inside compute_tax_per_wallet(), which is captured with a patch.
+    def _run_with_allocation(self, transactions: List[object], method: AbstractAccountingMethod) -> Tuple[List[_GainLossTuple], List[_Holding]]:
+        configuration = Configuration(_CONFIGURATION_PATH, US())
+        input_data = self._create_input_data(configuration, transactions)
+        results: List[TransferAnalysisResult] = []
+        analyze_and_pair = TransferAnalyzer.analyze_and_pair
+
+        def capture(analyzer: TransferAnalyzer) -> TransferAnalysisResult:
+            result = analyze_and_pair(analyzer)
+            results.append(result)
+            return result
+
+        with patch.object(TransferAnalyzer, "analyze_and_pair", capture):
+            computed_data = compute_tax_per_wallet(
+                configuration,
+                self._create_accounting_engine({1970: method}),
+                input_data,
+                _allocation_config((_COINBASE, _KRAKEN, _BLOCKFI)),
+                AccountingMethodFIFO(),
+            )
+        self.assertEqual(len(results), 1)
+        holdings: Dict[Tuple[str, str, str], Tuple[RP2Decimal, RP2Decimal]] = {}
+        for account, wallet_input_data in results[0].wallet_2_input_data.items():
+            for entry in wallet_input_data.unfiltered_in_transaction_set:
+                assert isinstance(entry, InTransaction)
+                amount = wallet_input_data.in_transaction_2_actual_amount.get(entry, entry.crypto_in)
+                if amount == ZERO:
+                    continue
+                key = (account.exchange, entry.original_lot.unique_id, str(entry.cost_basis_timestamp.date()))
+                held_amount, held_basis = holdings.get(key, (ZERO, ZERO))
+                holdings[key] = (held_amount + amount, held_basis + entry.fiat_in_with_fee * amount / entry.crypto_in)
+        gain_losses = self._to_tuples([gain_loss for gain_loss in computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)])
+        return gain_losses, sorted((key[0], key[1], amount, basis, key[2]) for key, (amount, basis) in holdings.items())
+
+    # R03 from the review of eprbell/rp2#155: lots allocated at the switch must survive round trips between wallets.
+    #
+    # The rule in plain English: moving coins between your own wallets changes nothing for tax purposes (IRS FAQ A81), except that the
+    # coins paid as a fee are sold (A97). The coins keep their cost and purchase date wherever they go (Treas. Reg. §1.1012-1(j)(1): the
+    # date units were transferred into a wallet is disregarded), and at the switch each wallet is given lots that keep the original cost and
+    # purchase date of the unused basis (Rev. Proc. 2024-28 §3.04). So when coins come back to a wallet, the wallet must end up with exactly
+    # the coins, cost and dates it had before, minus whatever was sold or paid as fees on the way.
+    #
+    # Example (from the review): buy 10 coins in Coinbase in 2024. At the switch they are allocated to Coinbase. In 2025 move 4 coins to
+    # Kraken and then back. Coinbase must hold 10 coins with their $1,000 cost and 2024 purchase date, and Kraken none. Before the fix the
+    # returning coins were added to the 2024 purchase (which no wallet holds after the switch) instead of the allocated lot, and the
+    # calculation stopped with "returned amount exceeds its crypto_in: 14 > 10".
+    #
+    # Every case runs with each accounting method: the expected results are the same for all of them.
+    def test_allocated_lots_survive_transfer_cycles(self) -> None:
+        class _Case(NamedTuple):
+            description: str
+            transactions: List[object]
+            want_gain_losses: List[_GainLoss]
+            # (wallet, original lot, amount, cost basis, acquisition date) of what each wallet holds at the end.
+            want_holdings: List[Tuple[str, str, str, str, str]]
+
+        buy_10 = _In("i1", "2024-06-01T00:00:00+00:00", "Coinbase", "Buy", "100", "10")
+        coinbase_to_kraken = _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "4", "4")
+        kraken_to_coinbase = _Intra("t2", "2025-03-01T00:00:00+00:00", "Kraken", "Coinbase", "150", "4", "4")
+        all_in_coinbase = [("Coinbase", "i1", "10", "1000", "2024-06-01")]
+        cases = [
+            _Case(
+                description="the review's example: 4 coins to Kraken and back",
+                transactions=[buy_10, coinbase_to_kraken, kraken_to_coinbase],
+                want_gain_losses=[],
+                want_holdings=all_in_coinbase,
+            ),
+            _Case(
+                description="partial return: 3 of the 4 coins come back",
+                transactions=[buy_10, coinbase_to_kraken, _Intra("t2", "2025-03-01T00:00:00+00:00", "Kraken", "Coinbase", "150", "3", "3")],
+                want_gain_losses=[],
+                want_holdings=[("Coinbase", "i1", "9", "900", "2024-06-01"), ("Kraken", "i1", "1", "100", "2024-06-01")],
+            ),
+            _Case(
+                description="a sale in between: 1 of the 4 coins is sold in Kraken, the other 3 come back",
+                transactions=[
+                    buy_10,
+                    coinbase_to_kraken,
+                    _Out("o1", "2025-02-15T00:00:00+00:00", "Kraken", "200", "1"),
+                    _Intra("t2", "2025-03-01T00:00:00+00:00", "Kraken", "Coinbase", "150", "3", "3"),
+                ],
+                want_gain_losses=[_GainLoss("o1", "i1", "1", "100", "100", False)],
+                want_holdings=[("Coinbase", "i1", "9", "900", "2024-06-01")],
+            ),
+            _Case(
+                # Each transfer pays a 0.1 coin fee when coins are worth $150: a sale of 0.1 coin for $15 with $10 of cost ($5 gain).
+                description="fees on both legs: 4 coins leave, 3.9 arrive in Kraken, 3.8 come back",
+                transactions=[
+                    buy_10,
+                    _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "4", "3.9"),
+                    _Intra("t2", "2025-03-01T00:00:00+00:00", "Kraken", "Coinbase", "150", "3.9", "3.8"),
+                ],
+                want_gain_losses=[_GainLoss("t1", "i1", "0.1", "10", "5", False), _GainLoss("t2", "i1", "0.1", "10", "5", False)],
+                want_holdings=[("Coinbase", "i1", "9.8", "980", "2024-06-01")],
+            ),
+            _Case(
+                description="multiple hops: Coinbase -> Kraken -> BlockFi -> Coinbase",
+                transactions=[
+                    buy_10,
+                    coinbase_to_kraken,
+                    _Intra("t2", "2025-02-15T00:00:00+00:00", "Kraken", "BlockFi", "150", "4", "4"),
+                    _Intra("t3", "2025-03-01T00:00:00+00:00", "BlockFi", "Coinbase", "150", "4", "4"),
+                ],
+                want_gain_losses=[],
+                want_holdings=all_in_coinbase,
+            ),
+            _Case(
+                description="two round trips in a row",
+                transactions=[
+                    buy_10,
+                    coinbase_to_kraken,
+                    kraken_to_coinbase,
+                    _Intra("t3", "2025-04-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "4", "4"),
+                    _Intra("t4", "2025-05-01T00:00:00+00:00", "Kraken", "Coinbase", "150", "4", "4"),
+                ],
+                want_gain_losses=[],
+                want_holdings=all_in_coinbase,
+            ),
+            _Case(
+                # 4 of the 10 coins were moved to Kraken in 2024, so the allocation splits the purchase: 6 coins to Coinbase, 4 to Kraken.
+                # In 2025 Kraken's 4 coins go to Coinbase (10 there), all 10 make a trip to BlockFi and back, then 2 go to Kraken.
+                # The 4 coins from Kraken were bought in Coinbase: before the fix, on their way back from BlockFi they were returned to the
+                # 2024 purchase instead of the lot they left Coinbase from.
+                description="split allocation: one purchase allocated to two wallets, then moved between them",
+                transactions=[
+                    buy_10,
+                    _Intra("t0", "2024-09-01T00:00:00+00:00", "Coinbase", "Kraken", "120", "4", "4"),
+                    _Intra("t1", "2025-02-01T00:00:00+00:00", "Kraken", "Coinbase", "150", "4", "4"),
+                    _Intra("t2", "2025-03-01T00:00:00+00:00", "Coinbase", "BlockFi", "150", "10", "10"),
+                    _Intra("t3", "2025-04-01T00:00:00+00:00", "BlockFi", "Coinbase", "150", "10", "10"),
+                    _Intra("t4", "2025-05-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "2", "2"),
+                ],
+                want_gain_losses=[],
+                want_holdings=[("Coinbase", "i1", "8", "800", "2024-06-01"), ("Kraken", "i1", "2", "200", "2024-06-01")],
+            ),
+            _Case(
+                # Two purchases at different prices: whatever order the accounting method picks the coins in, each coin comes back to its
+                # own lot, with its own cost and date.
+                description="two purchases at different prices: all 10 coins to Kraken and back",
+                transactions=[
+                    _In("i1", "2024-06-01T00:00:00+00:00", "Coinbase", "Buy", "100", "5"),
+                    _In("i2", "2024-07-01T00:00:00+00:00", "Coinbase", "Buy", "300", "5"),
+                    _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "10", "10"),
+                    _Intra("t2", "2025-03-01T00:00:00+00:00", "Kraken", "Coinbase", "150", "10", "10"),
+                ],
+                want_gain_losses=[],
+                want_holdings=[("Coinbase", "i1", "5", "500", "2024-06-01"), ("Coinbase", "i2", "5", "1500", "2024-07-01")],
+            ),
+            _Case(
+                # The purchase date survives the round trip: a sale more than a year after the 2024 purchase is long-term.
+                description="sale after the round trip keeps the 2024 purchase date",
+                transactions=[buy_10, coinbase_to_kraken, kraken_to_coinbase, _Out("o1", "2025-07-01T00:00:00+00:00", "Coinbase", "200", "10")],
+                want_gain_losses=[_GainLoss("o1", "i1", "10", "1000", "1000", True)],
+                want_holdings=[],
+            ),
+        ]
+
+        methods: Dict[str, AbstractAccountingMethod] = {
+            "fifo": AccountingMethodFIFO(),
+            "lifo": AccountingMethodLIFO(),
+            "hifo": AccountingMethodHIFO(),
+            "lofo": AccountingMethodLOFO(),
+        }
+        for case in cases:
+            for method_name, method in methods.items():
+                with self.subTest(name=case.description, method=method_name):
+                    got_gain_losses, got_holdings = self._run_with_allocation(case.transactions, method)
+                    self.assertEqual(_sorted(got_gain_losses), _sorted(self._want_tuples(case.want_gain_losses)))
+                    want_holdings: List[_Holding] = [
+                        (wallet, lot, RP2Decimal(amount), RP2Decimal(basis), date) for wallet, lot, amount, basis, date in case.want_holdings
+                    ]
+                    self.assertEqual(got_holdings, want_holdings)
 
     def test_per_wallet_is_rejected_for_japan(self) -> None:
         # Japan uses universal application (total/moving average, pooled across all wallets): per-wallet code must never run.

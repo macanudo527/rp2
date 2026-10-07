@@ -275,17 +275,25 @@ class TransferAnalyzer:
         )
 
         if not self.__skip_transfer_pointers:
-            # Update the originates_from field of the artificial transaction and the to_lots field of all its ancestors.
-            current_transaction: Optional[InTransaction] = result
+            # originates_from (used to detect round trips) only contains lots that wallets actually hold during this analysis: the lot the
+            # units leave from, plus the wallets that lot's units were in before (its own originates_from). It doesn't follow from_lot: past
+            # a lot created by the unused basis allocation, from_lot leads to an input lot bought before the switch, which is not held by
+            # any wallet here. Returning units to it would count them twice.
+            # Example: 10 units bought in 2024 are allocated to wallet A at the switch as lot X. Move 4 units A -> B (lot Y), then B -> A:
+            # Y.originates_from is {A: X}, so the 4 units go back to X (6 + 4 = 10 units). Following from_lot instead would also reach the
+            # 2024 purchase in A: its 10 units plus the 4 returned make 14 units out of 10.
+            # When a wallet appears more than once, the most recent lot (the closest to this transfer) is the one that holds the units.
+            from_account = Account(from_in_transaction.exchange, from_in_transaction.holder)
+            result.originates_from[from_account] = from_in_transaction
+            for account, lot in from_in_transaction.originates_from.items():
+                result.originates_from.setdefault(account, lot)
+
+            # to_lots records where the units went, for every lot they come from (including input lots bought before the switch).
             to_account = Account(transfer_transaction.to_exchange, transfer_transaction.to_holder)
-            while True:
-                current_transaction = current_transaction.from_lot if current_transaction is not None else None
-                if current_transaction is None:
-                    break
-                current_account = Account(current_transaction.exchange, current_transaction.holder)
-                result.originates_from[current_account] = current_transaction
-                to_lots = current_transaction.to_lots.setdefault(to_account, [])
-                to_lots.append(result)
+            current_transaction: Optional[InTransaction] = from_in_transaction
+            while current_transaction is not None:
+                current_transaction.to_lots.setdefault(to_account, []).append(result)
+                current_transaction = current_transaction.from_lot
 
         return result
 
