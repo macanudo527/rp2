@@ -158,6 +158,8 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 #### Per-Wallet and Global Allocation Tests (new)
 
 - `tests/test_per_wallet_tax_engine.py` — end-to-end, hand-computed examples for `compute_tax_per_wallet` (edge cases: fees, #149, holding period, allocation, timezone boundary, same-timestamp order, cycles, method change, dust).
+- `tests/test_per_wallet_reports.py` — per-wallet report output, checked in actual ODS cells (transfer fees, remaining basis, artificial lots).
+- `tests/per_wallet_common.py` — shared helpers of the two files above: short-form transactions (`_In`, `_Out`, `_Intra`), expected gain/losses, wallets and `AbstractPerWalletTest`.
 - `tests/test_per_wallet_properties.py` — hypothesis property tests: wallet lots = wallet balance after each step, basis/lot conservation, single wallet per-wallet == universal, JP universal results unaffected.
 - `tests/test_ods_output_diff_per_wallet.py` — CLI: country section doesn't change pre-2025 output; 2025 data needs `[country.us]`; conflicting `application_mode` and other countries' sections are rejected; `-w` no longer exists.
 - `tests/test_application_policy.py` — `ApplicationPolicy`: per-year modes, explicit choices, switch year, policy validation.
