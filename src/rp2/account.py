@@ -15,8 +15,8 @@
 from dataclasses import dataclass
 
 
-# Wallet identity: an exchange (or wallet) and its holder.
-@dataclass(frozen=True, eq=True)
+# Wallet identity: an exchange (or wallet) and its holder. Accounts sort by exchange, then holder.
+@dataclass(frozen=True, eq=True, order=True)
 class Account:
     exchange: str
     holder: str

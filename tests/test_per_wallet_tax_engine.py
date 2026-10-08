@@ -23,7 +23,6 @@
 import unittest
 from dataclasses import dataclass, field
 from typing import Dict, List, NamedTuple, Optional, Tuple
-from unittest.mock import patch
 
 from per_wallet_common import (
     _ASSET,
@@ -37,6 +36,7 @@ from per_wallet_common import (
     _GainLoss,
     _GainLossTuple,
     _Holding,
+    _holdings,
     _In,
     _Intra,
     _Out,
@@ -55,10 +55,9 @@ from rp2.plugin.accounting_method.lifo import AccountingMethod as AccountingMeth
 from rp2.plugin.accounting_method.lofo import AccountingMethod as AccountingMethodLOFO
 from rp2.plugin.country.jp import JP
 from rp2.plugin.country.us import US
-from rp2.rp2_decimal import ZERO, RP2Decimal
+from rp2.rp2_decimal import RP2Decimal
 from rp2.rp2_error import RP2ValueError
 from rp2.tax_engine import compute_tax, compute_tax_per_wallet
-from rp2.transfer_analyzer import TransferAnalysisResult, TransferAnalyzer
 
 
 @dataclass(frozen=True)
@@ -442,40 +441,20 @@ class TestPerWalletTaxEngine(AbstractPerWalletTest):
                 self._run_test(test)
 
     # Runs per-wallet application with an unused basis allocation at the switch (wallet order: Coinbase, Kraken, BlockFi) and returns its
-    # gain/losses and what each wallet holds at the end, as (wallet, original lot, amount, cost basis, acquisition date), merged by
-    # original lot. The holdings come from the TransferAnalyzer run inside compute_tax_per_wallet(), which is captured with a patch.
+    # gain/losses and what each wallet holds at the end (see _holdings()).
     def _run_with_allocation(self, transactions: List[object], method: AbstractAccountingMethod) -> Tuple[List[_GainLossTuple], List[_Holding]]:
         configuration = Configuration(_CONFIGURATION_PATH, US())
-        input_data = self._create_input_data(configuration, transactions)
-        results: List[TransferAnalysisResult] = []
-        analyze_and_pair = TransferAnalyzer.analyze_and_pair
-
-        def capture(analyzer: TransferAnalyzer) -> TransferAnalysisResult:
-            result = analyze_and_pair(analyzer)
-            results.append(result)
-            return result
-
-        with patch.object(TransferAnalyzer, "analyze_and_pair", capture):
-            computed_data = compute_tax_per_wallet(
-                configuration,
-                self._create_accounting_engine({1970: method}),
-                input_data,
-                _allocation_config((_COINBASE, _KRAKEN, _BLOCKFI)),
-                AccountingMethodFIFO(),
-            )
-        self.assertEqual(len(results), 1)
-        holdings: Dict[Tuple[str, str, str], Tuple[RP2Decimal, RP2Decimal]] = {}
-        for account, wallet_input_data in results[0].wallet_2_input_data.items():
-            for entry in wallet_input_data.unfiltered_in_transaction_set:
-                assert isinstance(entry, InTransaction)
-                amount = wallet_input_data.in_transaction_2_actual_amount.get(entry, entry.crypto_in)
-                if amount == ZERO:
-                    continue
-                key = (account.exchange, entry.original_lot.unique_id, str(entry.cost_basis_timestamp.date()))
-                held_amount, held_basis = holdings.get(key, (ZERO, ZERO))
-                holdings[key] = (held_amount + amount, held_basis + entry.fiat_in_with_fee * amount / entry.crypto_in)
+        computed_data = compute_tax_per_wallet(
+            configuration,
+            self._create_accounting_engine({1970: method}),
+            self._create_input_data(configuration, transactions),
+            _allocation_config((_COINBASE, _KRAKEN, _BLOCKFI)),
+            AccountingMethodFIFO(),
+        )
         gain_losses = self._to_tuples([gain_loss for gain_loss in computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)])
-        return gain_losses, sorted((key[0], key[1], amount, basis, key[2]) for key, (amount, basis) in holdings.items())
+        wallet_lots = computed_data.wallet_lots
+        assert wallet_lots is not None
+        return gain_losses, _holdings(wallet_lots)
 
     # R03 from the review of eprbell/rp2#155: lots allocated at the switch must survive round trips between wallets.
     #

@@ -17,11 +17,28 @@
 
 import shutil
 import unittest
+from datetime import date
 from pathlib import Path
-from typing import List, NamedTuple
+from typing import List, NamedTuple, Optional, Tuple
 
 from ods_diff import read_sheet_rows
-from per_wallet_common import _ASSET, _CONFIGURATION_PATH, _COINBASE, _KRAKEN, _UTC, AbstractPerWalletTest, _GainLoss, _In, _Intra, _Out, _sorted
+from per_wallet_common import (
+    _ASSET,
+    _BLOCKFI,
+    _COINBASE,
+    _CONFIGURATION_PATH,
+    _KRAKEN,
+    _UTC,
+    AbstractPerWalletTest,
+    _allocation_config,
+    _GainLoss,
+    _Holding,
+    _holdings,
+    _In,
+    _Intra,
+    _Out,
+    _sorted,
+)
 
 from rp2.configuration import MAX_DATE, MIN_DATE, Configuration
 from rp2.gain_loss import GainLoss
@@ -34,7 +51,7 @@ from rp2.plugin.report.open_positions import Generator as OpenPositionsGenerator
 from rp2.plugin.report.rp2_full_report import Generator as FullReportGenerator
 from rp2.plugin.report.us.tax_report_us import Generator as TaxReportUSGenerator
 from rp2.rp2_decimal import RP2Decimal
-from rp2.tax_engine import compute_tax_per_wallet
+from rp2.tax_engine import compute_tax, compute_tax_per_wallet
 
 
 class TestPerWalletReports(AbstractPerWalletTest):
@@ -221,6 +238,172 @@ class TestPerWalletReports(AbstractPerWalletTest):
                 self.assertEqual(got_by_asset, case.want_by_asset)
                 got_by_exchange: List[List[str]] = [row[:6] for row in read_sheet_rows(open_positions_path, "Asset - Exchange") or [] if row[:1] == [_ASSET]]
                 self.assertEqual(got_by_exchange, case.want_by_exchange)
+
+    # R04 from the review of eprbell/rp2#155: the Open Positions report must show each wallet's actual remaining cost basis.
+    #
+    # The rule in plain English: from 2025, US taxpayers track cost basis wallet by wallet. Each wallet has its own coins with their own cost
+    # and purchase dates (IRC §1012(c)(1): "on an account by account basis"; Treas. Reg. §1.1012-1(j)(1) and (j)(3): units are identified
+    # within each wallet or broker account). Coins that were bought before 2025 and not yet sold get their cost assigned to the wallets at
+    # the start of 2025 (Rev. Proc. 2024-28 §5.02, global allocation). So a wallet's cost basis is the cost of the coins that wallet holds.
+    #
+    # Example (from the review): in 2025 buy 1 coin for $100 in Coinbase and 1 coin for $1,000 in Kraken. Coinbase's cost basis is $100 and
+    # Kraken's is $1,000. Before the fix the report spread the $1,100 total over the coins and showed $550 for each wallet.
+    #
+    # Each case checks the actual report cells: the balance and cost basis of every holder ("Asset" sheet) and every wallet ("Asset -
+    # Exchange" sheet), that the per-unit cost basis is cost basis / balance, and that the wallets add up to the holder's row. The report shows
+    # the holdings at the end of the report's to date (not the final ones), whatever its from date. If the to date is before 2025, the report
+    # shows them like universal application always did (each wallet gets the average cost), and so do assets in universal application.
+    def test_open_positions_show_each_wallet_actual_cost_basis(self) -> None:  # pylint: disable=too-many-locals
+        class _Case(NamedTuple):
+            description: str
+            transactions: List[object]
+            # "Asset" sheet: (holder, balance, cost basis). "Asset - Exchange" sheet: (holder, wallet, balance, cost basis).
+            want_by_asset: List[Tuple[str, str, str]]
+            want_by_exchange: List[Tuple[str, str, str, str]]
+            from_date: date = MIN_DATE
+            to_date: date = MAX_DATE
+            per_wallet_configuration: PerWalletConfiguration = _UTC
+            # What the wallets hold at the to date, as (wallet, original lot, amount, cost basis, acquisition date), if checked.
+            want_holdings: Optional[List[Tuple[str, str, str, str, str]]] = None
+            # Use universal application (compute_tax()) instead of per-wallet application.
+            universal: bool = False
+
+        buy_100_coinbase = _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "1")
+        buy_1000_kraken = _In("i2", "2025-01-03T00:00:00+00:00", "Kraken", "Buy", "1000", "1")
+        # The same purchases in 2024, plus a 2025 purchase in BlockFi (so that the asset uses per-wallet application from 2025).
+        history_2024: List[object] = [
+            _In("i1", "2024-06-01T00:00:00+00:00", "Coinbase", "Buy", "100", "1"),
+            _In("i2", "2024-07-01T00:00:00+00:00", "Kraken", "Buy", "1000", "1"),
+            _In("i3", "2025-02-01T00:00:00+00:00", "BlockFi", "Buy", "500", "1"),
+        ]
+        cases = [
+            _Case(
+                description="the review's example: $100 in Coinbase, $1,000 in Kraken",
+                transactions=[buy_100_coinbase, buy_1000_kraken],
+                want_by_asset=[("Bob", "2.0", "1100.0")],
+                want_by_exchange=[("Bob", "Coinbase", "1.0", "100.0"), ("Bob", "Kraken", "1.0", "1000.0")],
+            ),
+            _Case(
+                description="partial sale: half of Kraken's coin is sold, so half of its $1,000 is left",
+                transactions=[buy_100_coinbase, buy_1000_kraken, _Out("o1", "2025-02-01T00:00:00+00:00", "Kraken", "1200", "0.5")],
+                want_by_asset=[("Bob", "1.5", "600.0")],
+                want_by_exchange=[("Bob", "Coinbase", "1.0", "100.0"), ("Bob", "Kraken", "0.5", "500.0")],
+            ),
+            _Case(
+                description="complete sale: Kraken's coin is sold, so Kraken has no row",
+                transactions=[buy_100_coinbase, buy_1000_kraken, _Out("o1", "2025-02-01T00:00:00+00:00", "Kraken", "1200", "1")],
+                want_by_asset=[("Bob", "1.0", "100.0")],
+                want_by_exchange=[("Bob", "Coinbase", "1.0", "100.0")],
+            ),
+            _Case(
+                # Kraken buys 2 coins for $1,000 each and sends 1.1 to Coinbase, paying 0.1 as the fee: the fee coin is sold (its $100 of
+                # cost is used up) and the coin that arrives keeps its $1,000 cost. Coinbase: $100 + $1,000. Kraken: 0.9 x $1,000.
+                description="transfer with a fee: the coin that arrives keeps its cost",
+                transactions=[
+                    buy_100_coinbase,
+                    _In("i2", "2025-01-03T00:00:00+00:00", "Kraken", "Buy", "1000", "2"),
+                    _Intra("t1", "2025-02-01T00:00:00+00:00", "Kraken", "Coinbase", "1200", "1.1", "1"),
+                ],
+                want_by_asset=[("Bob", "2.9", "2000.0")],
+                want_by_exchange=[("Bob", "Coinbase", "2.0", "1100.0"), ("Bob", "Kraken", "0.9", "900.0")],
+            ),
+            _Case(
+                # Kraken's coin moves to Coinbase on March 1st and both coins are sold on May 1st: at the end of March Coinbase holds both.
+                description="to date filter: the holdings at the end of the to date, not the final ones",
+                transactions=[
+                    buy_100_coinbase,
+                    buy_1000_kraken,
+                    _Intra("t1", "2025-03-01T00:00:00+00:00", "Kraken", "Coinbase", "1200", "1", "1"),
+                    _Out("o1", "2025-05-01T00:00:00+00:00", "Coinbase", "1300", "2"),
+                ],
+                to_date=date(2025, 3, 31),
+                want_by_asset=[("Bob", "2.0", "1100.0")],
+                want_by_exchange=[("Bob", "Coinbase", "2.0", "1100.0")],
+                want_holdings=[("Coinbase", "i1", "1", "100", "2025-01-02"), ("Coinbase", "i2", "1", "1000", "2025-01-03")],
+            ),
+            _Case(
+                description="from date filter: holdings bought before the from date are still shown",
+                transactions=[buy_100_coinbase, buy_1000_kraken],
+                from_date=date(2025, 2, 1),
+                want_by_asset=[("Bob", "2.0", "1100.0")],
+                want_by_exchange=[("Bob", "Coinbase", "1.0", "100.0"), ("Bob", "Kraken", "1.0", "1000.0")],
+            ),
+            _Case(
+                # At the switch the coins bought in 2024 are allocated in FIFO order to Kraken first, then to Coinbase (the configured wallet
+                # order): Kraken gets the $100 coin bought in Coinbase and Coinbase the $1,000 coin bought in Kraken. They keep their dates.
+                description="coins bought before 2025: the allocation at the switch decides each wallet's cost basis",
+                transactions=history_2024,
+                per_wallet_configuration=_allocation_config((_KRAKEN, _COINBASE, _BLOCKFI)),
+                want_by_asset=[("Bob", "3.0", "1600.0")],
+                want_by_exchange=[("Bob", "BlockFi", "1.0", "500.0"), ("Bob", "Coinbase", "1.0", "1000.0"), ("Bob", "Kraken", "1.0", "100.0")],
+                want_holdings=[
+                    ("BlockFi", "i3", "1", "500", "2025-02-01"),
+                    ("Coinbase", "i2", "1", "1000", "2024-07-01"),
+                    ("Kraken", "i1", "1", "100", "2024-06-01"),
+                ],
+            ),
+            _Case(
+                description="to date before 2025: universal application, each wallet gets the average cost basis ($550)",
+                transactions=history_2024,
+                per_wallet_configuration=_allocation_config((_KRAKEN, _COINBASE, _BLOCKFI)),
+                to_date=date(2024, 12, 31),
+                want_by_asset=[("Bob", "2.0", "1100.0")],
+                want_by_exchange=[("Bob", "Coinbase", "1.0", "550.0"), ("Bob", "Kraken", "1.0", "550.0")],
+            ),
+            _Case(
+                description="universal application: unchanged, each wallet gets the average cost basis ($550)",
+                transactions=[buy_100_coinbase, buy_1000_kraken],
+                universal=True,
+                want_by_asset=[("Bob", "2.0", "1100.0")],
+                want_by_exchange=[("Bob", "Coinbase", "1.0", "550.0"), ("Bob", "Kraken", "1.0", "550.0")],
+            ),
+        ]
+
+        set_generation_language("en")
+        output_dir = Path("output") / Path("test_per_wallet_tax_engine_r04")
+        for case in cases:
+            with self.subTest(name=case.description):
+                configuration = Configuration(_CONFIGURATION_PATH, US(), from_date=case.from_date, to_date=case.to_date)
+                input_data = self._create_input_data(configuration, case.transactions)
+                engine = self._create_accounting_engine(None)
+                if case.universal:
+                    computed_data = compute_tax(configuration, engine, input_data)
+                else:
+                    computed_data = compute_tax_per_wallet(configuration, engine, input_data, case.per_wallet_configuration, AccountingMethodFIFO())
+                wallet_lots = computed_data.wallet_lots
+                if case.universal or case.to_date < date(2025, 1, 1):
+                    self.assertIsNone(wallet_lots)
+                else:
+                    assert wallet_lots is not None
+                    if case.want_holdings is not None:
+                        want_holdings: List[_Holding] = [
+                            (wallet, lot, RP2Decimal(amount), RP2Decimal(basis), day) for wallet, lot, amount, basis, day in case.want_holdings
+                        ]
+                        self.assertEqual(_holdings(wallet_lots), want_holdings)
+
+                shutil.rmtree(output_dir, ignore_errors=True)
+                output_dir.mkdir(parents=True)
+                OpenPositionsGenerator().generate(US(), {1970: "fifo"}, {_ASSET: computed_data}, str(output_dir), "r04_", case.from_date, case.to_date, "en")
+                report_path = output_dir / Path("r04_fifo_open_positions.ods")
+                # Columns: asset, holder, (exchange), balance, per-unit cost basis, cost basis, cost basis weight %, ...
+                asset_rows = [row for row in read_sheet_rows(report_path, "Asset") or [] if row[:1] == [_ASSET]]
+                exchange_rows = [row for row in read_sheet_rows(report_path, "Asset - Exchange") or [] if row[:1] == [_ASSET]]
+                got_by_asset: List[Tuple[str, str, str]] = [(row[1], row[2], row[4]) for row in asset_rows]
+                got_by_exchange: List[Tuple[str, str, str, str]] = [(row[1], row[2], row[3], row[5]) for row in exchange_rows]
+                self.assertEqual(got_by_asset, case.want_by_asset)
+                self.assertEqual(got_by_exchange, case.want_by_exchange)
+
+                # The per-unit cost basis is the cost basis divided by the balance, and the cost basis weight is relative to the total.
+                total_cost_basis = sum(float(row[5]) for row in exchange_rows)
+                for row in asset_rows:
+                    self.assertAlmostEqual(float(row[3]), float(row[4]) / float(row[2]))
+                for row in exchange_rows:
+                    self.assertAlmostEqual(float(row[4]), float(row[5]) / float(row[3]))
+                    self.assertAlmostEqual(float(row[6]), float(row[5]) / total_cost_basis)
+                # The wallets of each holder add up to the holder's row.
+                for row in asset_rows:
+                    self.assertAlmostEqual(sum(float(exchange_row[3]) for exchange_row in exchange_rows if exchange_row[1] == row[1]), float(row[2]))
+                    self.assertAlmostEqual(sum(float(exchange_row[5]) for exchange_row in exchange_rows if exchange_row[1] == row[1]), float(row[4]))
 
 
 if __name__ == "__main__":

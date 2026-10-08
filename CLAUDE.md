@@ -98,8 +98,10 @@ tax_engine.compute_tax_per_wallet():
       IntraTransaction → fee paid first (always a disposal GainLoss: IRS FAQ A81/A97), received units
         become artificial InTransactions in the destination
         (cycles A→B→A return units to the lot they left A from, e.g. the lot allocated to A at the switch)
+  - TransferAnalyzer also records what each wallet holds at the end of the report's to_date (WalletLot list, only if to_date is on or
+    after the switch): ComputedData.wallet_lots, used by the open positions report for each wallet's actual cost basis
   ↓
-ComputedData (asset → GainLossSet: universal pre-switch + per-wallet post-switch)
+ComputedData (asset → GainLossSet: universal pre-switch + per-wallet post-switch; wallet_lots)
   ↓
 plugin/report/ generators → ODS output files + logs
 ```
@@ -130,6 +132,7 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 | `PerWalletTransactions` | `transfer_analyzer.py` | Lots (with per-method heaps), actual amounts and out/intra sets of one wallet during transfer analysis |
 | `TransferAnalyzer` | `transfer_analyzer.py` | Per-wallet engine: decomposes `InputData` into per-wallet `InputData` and pairs taxable events with lots of their wallet (`analyze_and_pair()`) |
 | `AcquisitionDateFifo` | `acquisition_date_fifo.py` | Per-wallet FIFO: orders lots by original acquisition date (`cost_basis_timestamp`), not arrival date |
+| `WalletLot` | `wallet_lot.py` | Per-wallet inventory: the units of one lot held by one wallet at the report's to_date (amount, cost basis, original acquisition date and lot); `ComputedData.wallet_lots` (None in universal application) |
 | `UnusedBasisAllocator` | `unused_basis_allocator.py` | [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) global allocation of unused lots to wallets at the per-wallet switch |
 | `PerWalletConfiguration` | `per_wallet_configuration.py` | per-wallet fields of the `[country.<code>]` config section: timezone, unused basis allocation rule (default plus per-asset overrides, `<field>.<asset>`) |
 | `ApplicationPolicy` | `application_policy.py` | Per-year allowed/default `ApplicationMode` (universal, per-wallet) of a country (`AbstractCountry.get_application_policy()`); resolves the user's optional `application_mode` and the per-wallet switch year |

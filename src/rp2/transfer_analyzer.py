@@ -28,7 +28,7 @@ from rp2.abstract_accounting_method import (
 from rp2.abstract_transaction import AbstractTransaction
 from rp2.account import Account
 from rp2.acquisition_date_fifo import AcquisitionDateFifo
-from rp2.configuration import MIN_DATE, Configuration
+from rp2.configuration import MAX_DATE, MIN_DATE, Configuration
 from rp2.gain_loss import GainLoss
 from rp2.in_transaction import InTransaction
 from rp2.input_data import InputData
@@ -38,6 +38,7 @@ from rp2.plugin.accounting_method.lifo import AccountingMethod as AccountingMeth
 from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2RuntimeError, RP2TypeError, RP2ValueError
 from rp2.transaction_set import TransactionSet
+from rp2.wallet_lot import WalletLot
 
 # Transactions with the same timestamp are processed in this order (then by row): funds that arrive at a given instant (acquisitions
 # and transfers) are available to disposals that occur at the same instant.
@@ -68,6 +69,8 @@ class TransferAnalysisResult(NamedTuple):
     wallet_2_input_data: Dict[Account, InputData]
     # Gain/loss pairings of all taxable events, computed per wallet.
     gain_loss_list: List[GainLoss]
+    # What each wallet holds at the end of the holdings date passed to analyze_and_pair() (by default, after all transactions).
+    wallet_lots: List[WalletLot]
 
 
 # The lots and transactions of a single wallet during transfer analysis.
@@ -431,10 +434,13 @@ class TransferAnalyzer:
     def analyze(self) -> Dict[Account, InputData]:
         return self.analyze_and_pair().wallet_2_input_data
 
-    # Same as analyze(), but also returns the per-wallet gain/loss pairings of all taxable events. Transactions are processed in a single
-    # chronological pass (see _transaction_processing_order()), so every disposal or transfer sees exactly the lots its wallet holds at
-    # that moment.
-    def analyze_and_pair(self) -> TransferAnalysisResult:
+    # Same as analyze(), but also returns the per-wallet gain/loss pairings of all taxable events and what each wallet holds at the end of
+    # holdings_date. Transactions are processed in a single chronological pass (see _transaction_processing_order()), so every disposal or
+    # transfer sees exactly the lots its wallet holds at that moment.
+    # The holdings are recorded when the pass reaches the first transaction dated after holdings_date (in the transaction's own timezone,
+    # like BalanceSet does), so that they match the balances at that date. Example: buy in January, sell in May, holdings_date in April:
+    # the holdings include the January lot, untouched by the May sale.
+    def analyze_and_pair(self, holdings_date: date = MAX_DATE) -> TransferAnalysisResult:
         all_transactions: List[AbstractTransaction] = []
         for transaction_set in [
             self.__universal_input_data.unfiltered_in_transaction_set,
@@ -447,7 +453,10 @@ class TransferAnalyzer:
 
         gain_loss_list: List[GainLoss] = []
         wallet_2_per_wallet_transactions: Dict[Account, PerWalletTransactions] = {}
+        wallet_lots: Optional[List[WalletLot]] = None
         for transaction in all_transactions:
+            if wallet_lots is None and transaction.timestamp.date() > holdings_date:
+                wallet_lots = self._get_wallet_lots(wallet_2_per_wallet_transactions)
             if isinstance(transaction, InTransaction):
                 account = Account(transaction.exchange, transaction.holder)
                 self._get_or_create_per_wallet_transactions(wallet_2_per_wallet_transactions, account).add_acquired_lot(transaction)
@@ -460,9 +469,25 @@ class TransferAnalyzer:
             else:
                 raise RP2ValueError(f"Internal error: invalid transaction class: {transaction}")
 
+        if wallet_lots is None:
+            # No transaction is dated after holdings_date: the holdings are the final ones.
+            wallet_lots = self._get_wallet_lots(wallet_2_per_wallet_transactions)
+
         # Convert per-wallet transactions to input_data.
         wallet_2_input_data: Dict[Account, InputData] = {
             wallet: self._convert_per_wallet_transactions_to_input_data(self.__universal_input_data, per_wallet_transactions)
             for wallet, per_wallet_transactions in wallet_2_per_wallet_transactions.items()
         }
-        return TransferAnalysisResult(wallet_2_input_data, gain_loss_list)
+        return TransferAnalysisResult(wallet_2_input_data, gain_loss_list, wallet_lots)
+
+    # What each wallet holds right now: one WalletLot for every lot with units left in the wallet (sorted by wallet, then by lot order).
+    @staticmethod
+    def _get_wallet_lots(wallet_2_per_wallet_transactions: Dict[Account, PerWalletTransactions]) -> List[WalletLot]:
+        result: List[WalletLot] = []
+        for account in sorted(wallet_2_per_wallet_transactions):
+            per_wallet_transactions = wallet_2_per_wallet_transactions[account]
+            for lot in per_wallet_transactions.acquired_lot_list:
+                amount = per_wallet_transactions.get_actual_amount(lot)
+                if amount > ZERO:
+                    result.append(WalletLot(account, lot, amount))
+        return result

@@ -42,6 +42,7 @@ from rp2.rp2_error import RP2RuntimeError, RP2ValueError
 from rp2.transaction_set import TransactionSet
 from rp2.transfer_analyzer import TransferAnalyzer
 from rp2.unused_basis_allocator import UnusedBasisAllocator, UnusedLot
+from rp2.wallet_lot import WalletLot
 
 
 def compute_tax(configuration: Configuration, accounting_engine: AccountingEngine, input_data: InputData) -> ComputedData:
@@ -194,10 +195,12 @@ def _create_unfiltered_gain_and_loss_set(
     return gain_loss_set
 
 
-# Taxable events and their gain/loss pairings for a part of the transaction history.
+# Taxable events and their gain/loss pairings for a part of the transaction history (and, in per-wallet application, what each wallet holds
+# at the end of the report's to_date).
 class _TaxResult(NamedTuple):
     taxable_events: List[AbstractTransaction]
     gain_loss_list: List[GainLoss]
+    wallet_lots: Optional[List[WalletLot]] = None
 
 
 # Per-wallet application (e.g. US from 2025, Treas. Reg. §1.1012-1(j)). The computation has three phases:
@@ -206,6 +209,9 @@ class _TaxResult(NamedTuple):
 # 2) at the switch: the lots that are still unused under universal application are allocated to the wallets that hold funds (Rev. Proc.
 #    2024-28 global allocation, see UnusedBasisAllocator);
 # 3) after the switch: TransferAnalyzer tracks lots per wallet and pairs every taxable event with lots of its own wallet.
+# Reports also get what each wallet holds at the end of the configuration's to_date (ComputedData.wallet_lots), so that they can show each
+# wallet's actual cost basis. If to_date is before the switch, the holdings at that date come from universal application, and reports
+# show them like compute_tax() does (wallet_lots is None).
 # allocation_method is the unused basis allocation method of this asset (see PerWalletConfiguration.get_unused_basis_allocation_method()).
 # per_wallet_start_year is the first year of per-wallet application: it must be the start of a period of the country's application policy
 # that allows per-wallet application. If it's None, the first such period whose default mode is per-wallet is used.
@@ -257,6 +263,8 @@ def compute_tax_per_wallet(
         # Phase 3: per-wallet application after the switch.
         LOGGER.info("%s: per-wallet application from %s (%d transactions)", input_data.asset, switch_timestamp, len(per_wallet_transactions))
         per_wallet_result = _compute_per_wallet_tax(configuration, accounting_engine, input_data.asset, start_year, per_wallet_transactions, allocated_lots)
+    # The wallet holdings at to_date are only meaningful if to_date is on or after the switch.
+    wallet_lots = per_wallet_result.wallet_lots if configuration.to_date >= switch_timestamp.date() else None
 
     taxable_event_set = TransactionSet(configuration, "MIXED", input_data.asset, MIN_DATE, MAX_DATE)
     for transaction in universal_result.taxable_events + per_wallet_result.taxable_events:
@@ -272,6 +280,7 @@ def compute_tax_per_wallet(
         input_data,
         configuration.from_date,
         configuration.to_date,
+        wallet_lots=wallet_lots,
     )
 
 
@@ -315,10 +324,10 @@ def _compute_per_wallet_tax(
         start_year_accounting_method,
         input_data,
         years_2_accounting_methods=accounting_engine.years_2_methods,
-    ).analyze_and_pair()
+    ).analyze_and_pair(holdings_date=configuration.to_date)
     LOGGER.info("%s: per-wallet application: found %d wallets", asset, len(transfer_analysis_result.wallet_2_input_data))
     taxable_events = [transaction for transaction in transactions if transaction.is_taxable()]
-    return _TaxResult(taxable_events, transfer_analysis_result.gain_loss_list)
+    return _TaxResult(taxable_events, transfer_analysis_result.gain_loss_list, transfer_analysis_result.wallet_lots)
 
 
 # The tax year of a transaction is the year of its timestamp (in the timezone of the timestamp itself). A transaction whose tax year is on

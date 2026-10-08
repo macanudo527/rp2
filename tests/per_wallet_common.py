@@ -31,8 +31,9 @@ from rp2.intra_transaction import IntraTransaction
 from rp2.out_transaction import OutTransaction
 from rp2.per_wallet_configuration import PerWalletConfiguration
 from rp2.plugin.accounting_method.fifo import AccountingMethod as AccountingMethodFIFO
-from rp2.rp2_decimal import RP2Decimal
+from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.transaction_set import TransactionSet
+from rp2.wallet_lot import WalletLot
 
 _ASSET = "B1"
 _CONFIGURATION_PATH = "./config/test_data.ini"
@@ -87,6 +88,17 @@ _Holding = Tuple[str, str, RP2Decimal, RP2Decimal, str]
 
 def _sorted(gain_losses: List[_GainLossTuple]) -> List[_GainLossTuple]:
     return sorted(gain_losses, key=str)
+
+
+# What the wallets hold (ComputedData.wallet_lots), merged by wallet and original lot: (wallet, original lot, amount, cost basis, acquisition
+# date), sorted.
+def _holdings(wallet_lots: List[WalletLot]) -> List[_Holding]:
+    holdings: Dict[Tuple[str, str, str], Tuple[RP2Decimal, RP2Decimal]] = {}
+    for wallet_lot in wallet_lots:
+        key = (wallet_lot.account.exchange, wallet_lot.original_lot.unique_id, str(wallet_lot.acquisition_timestamp.date()))
+        held_amount, held_basis = holdings.get(key, (ZERO, ZERO))
+        holdings[key] = (held_amount + wallet_lot.amount, held_basis + wallet_lot.cost_basis)
+    return sorted((key[0], key[1], amount, basis, key[2]) for key, (amount, basis) in holdings.items())
 
 
 def _allocation_config(order: Tuple[Account, ...]) -> PerWalletConfiguration:
@@ -157,7 +169,8 @@ class AbstractPerWalletTest(unittest.TestCase):
                         unique_id=transaction.unique_id,
                     )
                 )
-        return InputData(_ASSET, sets["IN"], sets["OUT"], sets["INTRA"])
+        # Like the input parser, the input data is filtered with the dates of the configuration.
+        return InputData(_ASSET, sets["IN"], sets["OUT"], sets["INTRA"], from_date=configuration.from_date, to_date=configuration.to_date)
 
     @staticmethod
     def _create_accounting_engine(years_2_methods: Optional[Dict[int, AbstractAccountingMethod]]) -> AccountingEngine:

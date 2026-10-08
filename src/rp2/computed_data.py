@@ -14,10 +14,11 @@
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Dict, List, Set, cast
+from typing import Dict, List, Optional, Set, cast
 
 from rp2.abstract_entry import AbstractEntry
-from rp2.balance import BalanceSet
+from rp2.account import Account
+from rp2.balance import CRYPTO_BALANCE_DECIMAL_MASK, BalanceSet
 from rp2.configuration import MAX_DATE, MIN_DATE, Configuration
 from rp2.entry_types import EntrySetType, TransactionType
 from rp2.gain_loss import GainLoss
@@ -28,8 +29,9 @@ from rp2.intra_transaction import IntraTransaction
 from rp2.logger import LOGGER
 from rp2.out_transaction import OutTransaction
 from rp2.rp2_decimal import ZERO, RP2Decimal
-from rp2.rp2_error import RP2TypeError, RP2ValueError
+from rp2.rp2_error import RP2RuntimeError, RP2TypeError, RP2ValueError
 from rp2.transaction_set import TransactionSet
+from rp2.wallet_lot import WalletLot
 
 
 @dataclass(frozen=True, eq=True)
@@ -196,6 +198,7 @@ class ComputedData:
         input_data: InputData,
         from_date: date = MIN_DATE,
         to_date: date = MAX_DATE,
+        wallet_lots: Optional[List[WalletLot]] = None,
     ) -> None:
         # pylint: disable=too-many-branches
         InputData.type_check("input_data", input_data)
@@ -288,6 +291,30 @@ class ComputedData:
         if self.__asset != input_data.asset:
             raise RP2ValueError(f"Asset mismatch in 'input_data': expected {self.__asset}, found {input_data.asset}")
 
+        self.__wallet_lots: Optional[List[WalletLot]] = self._check_wallet_lots(wallet_lots) if wallet_lots is not None else None
+
+    # The wallet lots must be what the wallets hold at to_date: for every wallet, their units must add up to its balance at to_date.
+    # Example: if a wallet's balance is 2 units, its lots can be 1.5 units of one lot and 0.5 of another, but not 1.5 units in total.
+    def _check_wallet_lots(self, wallet_lots: List[WalletLot]) -> List[WalletLot]:
+        account_2_amount: Dict[Account, RP2Decimal] = {}
+        for wallet_lot in wallet_lots:
+            if not isinstance(wallet_lot, WalletLot):
+                raise RP2TypeError(f"Parameter 'wallet_lots' contains a non-WalletLot element: {wallet_lot}")
+            if wallet_lot.lot.asset != self.__asset:
+                raise RP2ValueError(f"Asset mismatch in 'wallet_lots': expected {self.__asset}, found {wallet_lot.lot.asset}")
+            account_2_amount[wallet_lot.account] = account_2_amount.get(wallet_lot.account, ZERO) + wallet_lot.amount
+        account_2_balance: Dict[Account, RP2Decimal] = {
+            Account(balance.exchange, balance.holder): balance.final_balance for balance in self.__filtered_balance_set
+        }
+        for account in sorted(set(account_2_amount) | set(account_2_balance)):
+            amount = account_2_amount.get(account, ZERO)
+            balance = account_2_balance.get(account, ZERO)
+            if not RP2Decimal.is_equal_within_precision(amount, balance, CRYPTO_BALANCE_DECIMAL_MASK):
+                raise RP2RuntimeError(
+                    f"Internal error: the lots of {account.exchange}/{account.holder} add up to {amount} {self.__asset}, but its balance is {balance}"
+                )
+        return list(wallet_lots)
+
     @property
     def asset(self) -> str:
         """Asset this ComputedData instance is about."""
@@ -332,6 +359,11 @@ class ComputedData:
     def price_per_unit(self) -> RP2Decimal:
         """Average price per asset unit."""
         return self.__filtered_price_per_unit
+
+    @property
+    def wallet_lots(self) -> Optional[List[WalletLot]]:
+        """What each wallet holds at to_date, lot by lot, in per-wallet application (None if to_date is in universal application)."""
+        return list(self.__wallet_lots) if self.__wallet_lots is not None else None
 
     def get_crypto_in_running_sum(self, in_transaction: InTransaction) -> RP2Decimal:
         """Crypto in running sum for a given InTransaction instance."""
