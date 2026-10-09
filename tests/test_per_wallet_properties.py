@@ -124,7 +124,9 @@ def _histories(draw: st.DrawFn, accounts: List[Account], round_trips: bool = Fal
 
 
 # A history that crosses the switch to per-wallet application, how many of its steps happen before the switch (at least one step happens
-# after it) and the step whose date is the date of the report (None: no date filter).
+# after it) and the step whose date is the date of the report (None: no date filter). The report date is never earlier than the last step
+# before the switch (December 31st), so that most examples check the per-wallet holdings, and a few check that a report ending before the
+# switch has none.
 class _HistoryCrossingTheSwitch(NamedTuple):
     steps: List[_Step]
     steps_before_switch: int
@@ -135,7 +137,7 @@ class _HistoryCrossingTheSwitch(NamedTuple):
 def _histories_crossing_the_switch(draw: st.DrawFn) -> _HistoryCrossingTheSwitch:
     steps = draw(_histories(_ACCOUNTS, round_trips=True, min_steps=2))
     steps_before_switch = draw(st.integers(min_value=1, max_value=len(steps) - 1))
-    report_step = draw(st.one_of(st.none(), st.integers(min_value=0, max_value=len(steps) - 1)))
+    report_step = draw(st.one_of(st.none(), st.integers(min_value=steps_before_switch - 1, max_value=len(steps) - 1)))
     return _HistoryCrossingTheSwitch(steps, steps_before_switch, report_step)
 
 

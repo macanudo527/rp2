@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import date
+from datetime import date, datetime
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from prezzemolo.avl_tree import AVLTree
@@ -441,6 +441,9 @@ class TransferAnalyzer:
     # like BalanceSet does), so that they match the balances at that date. Example: buy in January, sell in May, holdings_date in April:
     # the holdings include the January lot, untouched by the May sale.
     def analyze_and_pair(self, holdings_date: date = MAX_DATE) -> TransferAnalysisResult:
+        # A datetime is also a date, but it can't be compared with the dates of the transactions.
+        if not isinstance(holdings_date, date) or isinstance(holdings_date, datetime):
+            raise RP2TypeError(f"Parameter 'holdings_date' is not of type date: {holdings_date}")
         all_transactions: List[AbstractTransaction] = []
         for transaction_set in [
             self.__universal_input_data.unfiltered_in_transaction_set,

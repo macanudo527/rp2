@@ -29,7 +29,7 @@ from rp2.intra_transaction import IntraTransaction
 from rp2.logger import LOGGER
 from rp2.out_transaction import OutTransaction
 from rp2.rp2_decimal import ZERO, RP2Decimal
-from rp2.rp2_error import RP2RuntimeError, RP2TypeError, RP2ValueError
+from rp2.rp2_error import RP2TypeError, RP2ValueError
 from rp2.transaction_set import TransactionSet
 from rp2.wallet_lot import WalletLot
 
@@ -293,8 +293,13 @@ class ComputedData:
 
         self.__wallet_lots: Optional[List[WalletLot]] = self._check_wallet_lots(wallet_lots) if wallet_lots is not None else None
 
-    # The wallet lots must be what the wallets hold at to_date: for every wallet, their units must add up to its balance at to_date.
-    # Example: if a wallet's balance is 2 units, its lots can be 1.5 units of one lot and 0.5 of another, but not 1.5 units in total.
+    # The wallet lots are what the wallets hold at to_date: for every wallet, their units should add up to its balance at to_date (shown in
+    # the Account Balances of the full report). They differ only if the input is inconsistent: the tax computation, and so the lots, use the
+    # crypto_out_with_fee of a sale, while balances use crypto_out_no_fee + crypto_fee, and the two can differ if both are in the input
+    # (e.g. because of exchange rounding). A difference is logged as a warning, not an error: reports still use the lots, which match the
+    # gain/loss computation.
+    # Example: buy 2 units, then sell with crypto_out_no_fee = 1, crypto_fee = 0.001 and crypto_out_with_fee = 1.00100001. The lots hold
+    # 0.99899999 units (2 - 1.00100001), while the balance is 0.999 (2 - 1 - 0.001).
     def _check_wallet_lots(self, wallet_lots: List[WalletLot]) -> List[WalletLot]:
         account_2_amount: Dict[Account, RP2Decimal] = {}
         for wallet_lot in wallet_lots:
@@ -303,15 +308,21 @@ class ComputedData:
             if wallet_lot.lot.asset != self.__asset:
                 raise RP2ValueError(f"Asset mismatch in 'wallet_lots': expected {self.__asset}, found {wallet_lot.lot.asset}")
             account_2_amount[wallet_lot.account] = account_2_amount.get(wallet_lot.account, ZERO) + wallet_lot.amount
-        account_2_balance: Dict[Account, RP2Decimal] = {
-            Account(balance.exchange, balance.holder): balance.final_balance for balance in self.__filtered_balance_set
-        }
+        account_2_balance: Dict[Account, RP2Decimal] = {}
+        for balance in self.__filtered_balance_set:
+            account_2_balance[Account(balance.exchange, balance.holder)] = balance.final_balance
         for account in sorted(set(account_2_amount) | set(account_2_balance)):
             amount = account_2_amount.get(account, ZERO)
-            balance = account_2_balance.get(account, ZERO)
-            if not RP2Decimal.is_equal_within_precision(amount, balance, CRYPTO_BALANCE_DECIMAL_MASK):
-                raise RP2RuntimeError(
-                    f"Internal error: the lots of {account.exchange}/{account.holder} add up to {amount} {self.__asset}, but its balance is {balance}"
+            balance_amount = account_2_balance.get(account, ZERO)
+            if not RP2Decimal.is_equal_within_precision(amount, balance_amount, CRYPTO_BALANCE_DECIMAL_MASK):
+                LOGGER.warning(
+                    "%s: the lots of %s/%s add up to %s, but its balance is %s: check the input (e.g. a sale whose crypto_out_with_fee is not "
+                    "crypto_out_no_fee + crypto_fee). Open positions use the lots, which match the gain/loss computation.",
+                    self.__asset,
+                    account.exchange,
+                    account.holder,
+                    amount,
+                    balance_amount,
                 )
         return list(wallet_lots)
 

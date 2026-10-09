@@ -405,6 +405,39 @@ class TestPerWalletReports(AbstractPerWalletTest):
                     self.assertAlmostEqual(sum(float(exchange_row[3]) for exchange_row in exchange_rows if exchange_row[1] == row[1]), float(row[2]))
                     self.assertAlmostEqual(sum(float(exchange_row[5]) for exchange_row in exchange_rows if exchange_row[1] == row[1]), float(row[4]))
 
+    # A sale whose crypto_out_with_fee differs from crypto_out_no_fee + crypto_fee (both are input fields, and exchange rounding can make
+    # them differ): the tax computation and the wallet lots use crypto_out_with_fee, while balances use crypto_out_no_fee + crypto_fee. This
+    # used to stop the whole run with an internal error: now it's a warning, and the reports are generated from the lots.
+    # Example: buy 2 coins for $100 each, then sell with crypto_out_no_fee = 1, crypto_fee = 0.001 and crypto_out_with_fee = 1.00100001.
+    # The lots hold 0.99899999 coins (2 - 1.00100001), with $99.899999 of cost basis, while the balance is 0.999 (2 - 1 - 0.001).
+    def test_inconsistent_sale_amounts_are_a_warning(self) -> None:
+        set_generation_language("en")
+        configuration = Configuration(_CONFIGURATION_PATH, US())
+        input_data = self._create_input_data(
+            configuration,
+            [
+                _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "2"),
+                _Out("o1", "2025-02-01T00:00:00+00:00", "Coinbase", "200", "1", "0.001", crypto_out_with_fee="1.00100001"),
+            ],
+        )
+        with self.assertLogs("rp2", level="WARNING") as logs:
+            computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data, _UTC)
+        self.assertTrue(any("the lots of Coinbase/Bob add up to 0.99899999" in message for message in logs.output), msg=str(logs.output))
+        wallet_lots = computed_data.wallet_lots
+        assert wallet_lots is not None
+        want_holdings: List[_Holding] = [("Coinbase", "i1", RP2Decimal("0.99899999"), RP2Decimal("99.899999"), "2025-01-02")]
+        self.assertEqual(_holdings(wallet_lots), want_holdings)
+
+        output_dir = Path("output") / Path("test_per_wallet_reports_inconsistent_sale")
+        shutil.rmtree(output_dir, ignore_errors=True)
+        output_dir.mkdir(parents=True)
+        for generator in (OpenPositionsGenerator(), FullReportGenerator(), TaxReportUSGenerator()):
+            generator.generate(US(), {1970: "fifo"}, {_ASSET: computed_data}, str(output_dir), "inconsistent_", MIN_DATE, MAX_DATE, "en")
+        exchange_rows = read_sheet_rows(output_dir / Path("inconsistent_fifo_open_positions.ods"), "Asset - Exchange") or []
+        got_by_exchange: List[List[str]] = [row[1:4] + row[5:6] for row in exchange_rows if row[:1] == [_ASSET]]
+        want_by_exchange: List[List[str]] = [["Bob", "Coinbase", "0.99899999", "99.899999"]]
+        self.assertEqual(got_by_exchange, want_by_exchange)
+
 
 if __name__ == "__main__":
     unittest.main()

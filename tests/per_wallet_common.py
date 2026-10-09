@@ -58,6 +58,8 @@ class _Out(NamedTuple):
     spot_price: str
     crypto_out_no_fee: str
     crypto_fee: str = "0"
+    # Optional input field: if None, it's crypto_out_no_fee + crypto_fee.
+    crypto_out_with_fee: Optional[str] = None
 
 
 class _Intra(NamedTuple):
@@ -148,6 +150,7 @@ class AbstractPerWalletTest(unittest.TestCase):
                         RP2Decimal(transaction.spot_price),
                         RP2Decimal(transaction.crypto_out_no_fee),
                         RP2Decimal(transaction.crypto_fee),
+                        crypto_out_with_fee=RP2Decimal(transaction.crypto_out_with_fee) if transaction.crypto_out_with_fee else None,
                         row=row,
                         unique_id=transaction.unique_id,
                     )

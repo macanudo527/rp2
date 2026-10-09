@@ -22,6 +22,7 @@
 
 import unittest
 from dataclasses import dataclass, field
+from datetime import date, datetime
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from per_wallet_common import (
@@ -55,9 +56,11 @@ from rp2.plugin.accounting_method.lifo import AccountingMethod as AccountingMeth
 from rp2.plugin.accounting_method.lofo import AccountingMethod as AccountingMethodLOFO
 from rp2.plugin.country.jp import JP
 from rp2.plugin.country.us import US
-from rp2.rp2_decimal import RP2Decimal
-from rp2.rp2_error import RP2ValueError
+from rp2.rp2_decimal import ZERO, RP2Decimal
+from rp2.rp2_error import RP2TypeError, RP2ValueError
 from rp2.tax_engine import compute_tax, compute_tax_per_wallet
+from rp2.transfer_analyzer import TransferAnalyzer
+from rp2.wallet_lot import WalletLot
 
 
 @dataclass(frozen=True)
@@ -629,6 +632,53 @@ class TestPerWalletTaxEngine(AbstractPerWalletTest):
         self.assertIs(artificial.original_lot, income)
         transactions: List[AbstractTransaction] = [artificial]
         self.assertFalse(any(transaction.is_earning() for transaction in transactions))
+
+    # WalletLot (what a wallet holds of a lot, see ComputedData.wallet_lots): its derived values and checks. Example: 2 coins bought for
+    # $200 plus a $2 fee in 2024, 1 of them moved to Kraken in 2025 (a lot with $101 of cost basis, fee included): half of it costs $50.50
+    # and keeps the 2024 purchase date.
+    def test_wallet_lot(self) -> None:
+        configuration = Configuration(_CONFIGURATION_PATH, US())
+        purchase = InTransaction(
+            configuration, "2024-06-01T00:00:00+00:00", _ASSET, "Coinbase", "Bob", "Buy", RP2Decimal("100"), RP2Decimal("2"), fiat_fee=RP2Decimal("2")
+        )
+        moved = InTransaction(
+            configuration,
+            "2025-02-01T00:00:00+00:00",
+            _ASSET,
+            "Kraken",
+            "Bob",
+            "Buy",
+            RP2Decimal("100"),
+            RP2Decimal("1"),
+            fiat_in_no_fee=RP2Decimal("100"),
+            fiat_fee=RP2Decimal("1"),
+            from_lot=purchase,
+            cost_basis_timestamp="2024-06-01T00:00:00+00:00",
+        )
+        wallet_lot = WalletLot(_KRAKEN, moved, RP2Decimal("0.5"))
+        self.assertEqual(wallet_lot.cost_basis, RP2Decimal("50.5"))
+        self.assertEqual(wallet_lot.acquisition_timestamp, purchase.timestamp)
+        self.assertIs(wallet_lot.original_lot, purchase)
+        # Equal wallet lots can be used in sets and as dictionary keys.
+        self.assertEqual(len({wallet_lot, WalletLot(_KRAKEN, moved, RP2Decimal("0.5"))}), 1)
+        with self.assertRaisesRegex(RP2ValueError, "Wallet lot amount 1.5 exceeds the lot amount 1"):
+            WalletLot(_KRAKEN, moved, RP2Decimal("1.5"))
+        with self.assertRaisesRegex(RP2ValueError, "Parameter 'amount' has zero value"):
+            WalletLot(_KRAKEN, moved, ZERO)
+        with self.assertRaisesRegex(RP2TypeError, "Parameter 'account' is not of type Account"):
+            WalletLot("Kraken", moved, RP2Decimal("1"))  # type: ignore
+
+    # The holdings date of TransferAnalyzer.analyze_and_pair() must be a date: a string or a datetime is rejected right away.
+    def test_holdings_date_must_be_a_date(self) -> None:
+        configuration = Configuration(_CONFIGURATION_PATH, US())
+        input_data = self._create_input_data(configuration, [_In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "1")])
+        analyzer = TransferAnalyzer(configuration, AccountingMethodFIFO(), input_data)
+        invalid_dates: List[object] = ["2025-04-30", datetime(2025, 4, 30)]
+        for invalid_date in invalid_dates:
+            with self.subTest(holdings_date=invalid_date):
+                with self.assertRaisesRegex(RP2TypeError, "Parameter 'holdings_date' is not of type date"):
+                    analyzer.analyze_and_pair(holdings_date=invalid_date)  # type: ignore
+        self.assertEqual(len(analyzer.analyze_and_pair(holdings_date=date(2025, 4, 30)).wallet_lots), 1)
 
 
 if __name__ == "__main__":
