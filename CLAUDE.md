@@ -134,7 +134,7 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 | `AcquisitionDateFifo` | `acquisition_date_fifo.py` | Per-wallet FIFO: orders lots by original acquisition date (`cost_basis_timestamp`), not arrival date |
 | `WalletLot` | `wallet_lot.py` | Per-wallet inventory: the units of one lot held by one wallet at the report's to_date (amount, cost basis, original acquisition date and lot); `ComputedData.wallet_lots` (None in universal application) |
 | `UnusedBasisAllocator` | `unused_basis_allocator.py` | [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) global allocation of unused lots to wallets at the per-wallet switch |
-| `PerWalletConfiguration` | `per_wallet_configuration.py` | per-wallet fields of the `[country.<code>]` config section: timezone, unused basis allocation rule (default plus per-asset overrides, `<field>.<asset>`) |
+| `PerWalletConfiguration` | `per_wallet_configuration.py` | per-wallet fields of the `[country.<code>]` config section: timezone (an IANA identifier resolved with `zoneinfo`: `UTC` or Area/Location; abbreviations like EST and `localtime` are rejected), unused basis allocation rule (default plus per-asset overrides, `<field>.<asset>`) |
 | `ApplicationPolicy` | `application_policy.py` | Per-year allowed/default `ApplicationMode` (universal, per-wallet) of a country (`AbstractCountry.get_application_policy()`); resolves the user's optional `application_mode` and the per-wallet switch year |
 | `GlobalAllocator` | `global_allocation.py` | Earlier, unwired prototype of global allocation (superseded by `UnusedBasisAllocator`) |
 

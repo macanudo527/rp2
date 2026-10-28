@@ -13,13 +13,48 @@
 # limitations under the License.
 
 from dataclasses import dataclass, field
-from datetime import tzinfo
 from typing import Dict, Optional, Set, Tuple
-
-from dateutil import tz
+from zoneinfo import ZoneInfo, available_timezones
 
 from rp2.account import Account
 from rp2.rp2_error import RP2TypeError, RP2ValueError
+
+# IANA time zone identifiers available on this computer. They come from the system time zone database or, where there is none (e.g. on
+# Windows), from the tzdata package (https://docs.python.org/3/library/zoneinfo.html#data-sources). Listing them reads hundreds of files,
+# so it's done only once (see _get_available_timezone_names()).
+_AVAILABLE_TIMEZONE_NAMES: Set[str] = set()
+
+
+def _get_available_timezone_names() -> Set[str]:
+    if not _AVAILABLE_TIMEZONE_NAMES:
+        _AVAILABLE_TIMEZONE_NAMES.update(available_timezones())
+    return _AVAILABLE_TIMEZONE_NAMES
+
+
+# Returns the time zone with the given IANA identifier (e.g. America/New_York or UTC). The same configuration file must give the same
+# result on every computer, so names whose meaning is ambiguous or depends on the computer are rejected:
+# - abbreviations, like PST, CST or EST: CST is US Central time to some and China time to others, and some libraries resolve an abbreviation
+#   that matches the computer's own time zone to that time zone (with python-dateutil, CST is UTC-6 on a computer set to Chicago time and
+#   UTC+8 on one set to Shanghai time). The few abbreviations that IANA keeps for compatibility have no daylight saving time: EST is UTC-5
+#   even in summer, when New York is at UTC-4;
+# - localtime, which is the computer's own time zone;
+# - identifiers with the wrong case (e.g. america/new_york): some systems find them and others don't.
+# So the name must be UTC or an Area/Location identifier (e.g. America/New_York, Europe/Rome, Etc/UTC), spelled as in the IANA database.
+def _get_iana_timezone(name: str) -> ZoneInfo:
+    if name != "UTC" and "/" not in name:
+        raise RP2ValueError(
+            f"'{name}' is not an IANA time zone identifier: use UTC or an Area/Location identifier (e.g. America/New_York). Abbreviations "
+            "like PST, CST or EST are not accepted, because their meaning is ambiguous or depends on the computer's settings"
+        )
+    available_names = _get_available_timezone_names()
+    if not available_names:
+        raise RP2ValueError(f"no IANA time zone data on this computer to look up '{name}': install the tzdata Python package (pip install tzdata)")
+    if name not in available_names:
+        raise RP2ValueError(
+            f"unknown IANA time zone '{name}': identifiers are case-sensitive (e.g. America/New_York), see "
+            "https://en.wikipedia.org/wiki/List_of_tz_database_time_zones"
+        )
+    return ZoneInfo(name)
 
 
 # User choices for per-wallet application: the per-wallet fields of the country section of the configuration file (e.g. [country.us]).
@@ -41,8 +76,10 @@ class PerWalletConfiguration:
     def __post_init__(self) -> None:
         if not isinstance(self.timezone_name, str) or not self.timezone_name.strip():
             raise RP2ValueError("Per-wallet configuration: 'timezone' cannot be empty")
-        if tz.gettz(self.timezone_name) is None:
-            raise RP2ValueError(f"Per-wallet configuration: unknown timezone '{self.timezone_name}' (use an IANA name, e.g. America/New_York)")
+        try:
+            _get_iana_timezone(self.timezone_name)
+        except RP2ValueError as exc:
+            raise RP2ValueError(f"Per-wallet configuration: invalid 'timezone': {exc}") from exc
         for wallet_order in [self.unused_basis_allocation_wallet_order, *self.asset_2_unused_basis_allocation_wallet_order.values()]:
             for account in wallet_order:
                 if not isinstance(account, Account):
@@ -83,9 +120,7 @@ class PerWalletConfiguration:
             result.add(self.unused_basis_allocation_method)
         return result
 
+    # The time zone of timezone_name (checked when the configuration is created).
     @property
-    def timezone(self) -> tzinfo:
-        result = tz.gettz(self.timezone_name)
-        if result is None:
-            raise RP2ValueError(f"Unknown timezone: {self.timezone_name}")
-        return result
+    def timezone(self) -> ZoneInfo:
+        return ZoneInfo(self.timezone_name)

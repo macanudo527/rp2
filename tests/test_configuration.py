@@ -13,9 +13,13 @@
 # limitations under the License.
 
 import os
+import re
+import subprocess
+import sys
+import time
 import unittest
 from configparser import ConfigParser
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from tempfile import NamedTemporaryFile
 from typing import Dict, Optional
 
@@ -31,7 +35,7 @@ from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2TypeError, RP2ValueError
 
 
-class TestConfiguration(unittest.TestCase):
+class TestConfiguration(unittest.TestCase):  # pylint: disable=too-many-public-methods
     _country: AbstractCountry
     _configuration: Configuration
 
@@ -146,6 +150,74 @@ class TestConfiguration(unittest.TestCase):
         config = self._per_wallet_config({})
         del config["country.us"]["timezone"]
         self.assertIsNone(self._test_config(config).per_wallet_configuration)
+
+    # The timezone must be an IANA identifier whose meaning doesn't depend on the computer: UTC or Area/Location (e.g. America/New_York).
+    # Abbreviations are rejected: python-dateutil, used before, resolved CST to UTC-6 on a computer set to Chicago time and to UTC+8 on one
+    # set to Shanghai time, so the same configuration file gave different results on different computers.
+    def test_per_wallet_timezone(self) -> None:
+        for name in ("America/New_York", "UTC", "Etc/UTC", "Europe/Rome", "America/Argentina/Buenos_Aires"):
+            with self.subTest(name=name):
+                configuration = self._test_config(self._per_wallet_config({"timezone": name}))
+                assert configuration.per_wallet_configuration is not None
+                self.assertEqual(configuration.per_wallet_configuration.timezone.key, name)
+        # Abbreviations (even those that IANA keeps for compatibility, like EST and GMT), old-style names and the computer's own time zone.
+        for name in ("PST", "CST", "EST", "GMT", "EST5EDT", "Japan", "localtime"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    RP2ValueError, re.escape(f"invalid 'timezone': '{name}' is not an IANA time zone identifier: use UTC or an Area/Location identifier")
+                ):
+                    self._test_config(self._per_wallet_config({"timezone": name}))
+        # Unknown identifiers, wrong case and the special posix/ and right/ variants of the database.
+        for name in ("America/New_Yrok", "america/new_york", "posix/America/New_York", "right/America/New_York"):
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(RP2ValueError, re.escape(f"invalid 'timezone': unknown IANA time zone '{name}': identifiers are case-sensitive")):
+                    self._test_config(self._per_wallet_config({"timezone": name}))
+
+    # The same configuration gives the same time zone on computers set to different time zones (the TZ environment variable sets the
+    # computer's time zone; it can be changed at run time only on Unix).
+    @unittest.skipUnless(hasattr(time, "tzset"), "time.tzset() is only available on Unix")
+    def test_per_wallet_timezone_on_computers_in_different_time_zones(self) -> None:
+        old_computer_timezone = os.environ.get("TZ")
+
+        def restore_computer_timezone() -> None:
+            if old_computer_timezone is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_computer_timezone
+            time.tzset()
+
+        self.addCleanup(restore_computer_timezone)
+        for computer_timezone in ("UTC", "America/Chicago", "Asia/Shanghai", "America/Los_Angeles"):
+            os.environ["TZ"] = computer_timezone
+            time.tzset()
+            with self.subTest(computer_timezone=computer_timezone):
+                configuration = self._test_config(self._per_wallet_config({}))
+                assert configuration.per_wallet_configuration is not None
+                # The start of 2025 in New York is 5 AM UTC.
+                start_of_2025 = datetime(2025, 1, 1, tzinfo=configuration.per_wallet_configuration.timezone)
+                self.assertEqual(start_of_2025, datetime(2025, 1, 1, 5, tzinfo=timezone.utc))
+                self.assertEqual(start_of_2025.utcoffset(), timedelta(hours=-5))
+                for name in ("CST", "PST", "localtime"):
+                    with self.assertRaisesRegex(RP2ValueError, re.escape(f"'{name}' is not an IANA time zone identifier")):
+                        self._test_config(self._per_wallet_config({"timezone": name}))
+
+    # The time zone data comes from the system or, where there is none (e.g. on Windows), from the tzdata package, which is a dependency of
+    # RP2. Both cases run in a separate Python process: PYTHONTZPATH="" makes it ignore the system data, like on Windows, and the second case
+    # also hides the tzdata package.
+    def test_per_wallet_timezone_data_sources(self) -> None:
+        script = "from rp2.per_wallet_configuration import PerWalletConfiguration\nprint(PerWalletConfiguration(timezone_name='America/New_York').timezone)\n"
+        environment = {**os.environ, "PYTHONTZPATH": ""}
+        result = subprocess.run([sys.executable, "-c", script], env=environment, capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stdout.strip(), "America/New_York")
+        hide_tzdata = "import sys\nsys.modules['tzdata'] = None\n"
+        result = subprocess.run([sys.executable, "-c", hide_tzdata + script], env=environment, capture_output=True, text=True, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            "Per-wallet configuration: invalid 'timezone': no IANA time zone data on this computer to look up 'America/New_York': install the "
+            "tzdata Python package (pip install tzdata)",
+            result.stderr,
+        )
 
     def test_config_file(self) -> None:
         config = ConfigParser()
