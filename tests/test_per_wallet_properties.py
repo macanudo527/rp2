@@ -29,6 +29,7 @@ from typing import Dict, List, NamedTuple, Optional, Set, Tuple
 
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
+from per_wallet_common import _create_configuration
 from prezzemolo.avl_tree import AVLTree
 
 from rp2.abstract_accounting_method import AbstractAccountingMethod
@@ -301,14 +302,12 @@ class TestPerWalletProperties(unittest.TestCase):
     def test_invariants_hold_across_the_switch(self, history: _HistoryCrossingTheSwitch, method_name: str) -> None:
         steps, steps_before_switch, report_step = history
         to_date = MAX_DATE if report_step is None else _get_step_timestamp(report_step, steps_before_switch).date()
-        configuration = Configuration(_CONFIGURATION_PATH, US(), to_date=to_date)
-        input_data = _create_input_data(configuration, steps, steps_before_switch)
         per_wallet_configuration = PerWalletConfiguration(
             timezone_name="UTC", unused_basis_allocation_method="fifo", unused_basis_allocation_wallet_order=tuple(_ACCOUNTS)
         )
-        computed_data = compute_tax_per_wallet(
-            configuration, _accounting_engine(_METHODS[method_name]), input_data, per_wallet_configuration, AccountingMethodFIFO()
-        )
+        configuration = _create_configuration(per_wallet_configuration, to_date=to_date)
+        input_data = _create_input_data(configuration, steps, steps_before_switch)
+        computed_data = compute_tax_per_wallet(configuration, _accounting_engine(_METHODS[method_name]), input_data, AccountingMethodFIFO())
         wallet_lots = computed_data.wallet_lots
         if to_date < _START.date():
             # The report date is before the switch: there are no per-wallet holdings yet (reports use universal application).
@@ -353,10 +352,9 @@ class TestPerWalletProperties(unittest.TestCase):
     @_SETTINGS
     @given(steps=_histories([_ACCOUNTS[0]]), method_name=st.sampled_from(sorted(_METHODS)))
     def test_single_wallet_per_wallet_equals_universal(self, steps: List[_Step], method_name: str) -> None:
-        configuration = Configuration(_CONFIGURATION_PATH, US())
+        configuration = _create_configuration()
         input_data = _create_input_data(configuration, steps)
-        per_wallet_configuration = PerWalletConfiguration(timezone_name="UTC")
-        per_wallet = compute_tax_per_wallet(configuration, _accounting_engine(_METHODS[method_name]), input_data, per_wallet_configuration)
+        per_wallet = compute_tax_per_wallet(configuration, _accounting_engine(_METHODS[method_name]), input_data)
         universal = compute_tax(configuration, _accounting_engine(_METHODS[method_name]), input_data)
         per_wallet_gain_losses = [gain_loss for gain_loss in per_wallet.gain_loss_set if isinstance(gain_loss, GainLoss)]
         universal_gain_losses = [gain_loss for gain_loss in universal.gain_loss_set if isinstance(gain_loss, GainLoss)]
@@ -374,7 +372,7 @@ class TestPerWalletProperties(unittest.TestCase):
         before = _universal_gain_losses(jp_configuration, input_data)
         # Per-wallet code must refuse to run for JP...
         with self.assertRaisesRegex(RP2ValueError, "not supported for country 'jp'"):
-            compute_tax_per_wallet(jp_configuration, _accounting_engine(AccountingMethodFIFO()), input_data, PerWalletConfiguration(timezone_name="Asia/Tokyo"))
+            compute_tax_per_wallet(jp_configuration, _accounting_engine(AccountingMethodFIFO()), input_data)
         # ... and running it anyway on the same objects (it mutates to_lots of the input lots) must not change universal results.
         TransferAnalyzer(jp_configuration, AccountingMethodFIFO(), input_data).analyze_and_pair()
         self.assertEqual(before, _universal_gain_losses(jp_configuration, input_data))

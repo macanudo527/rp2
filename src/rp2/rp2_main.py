@@ -161,7 +161,6 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
                     configuration=configuration,
                     accounting_engine=accounting_engine,
                     input_data=input_data,
-                    per_wallet_configuration=per_wallet_configuration,
                     allocation_method=allocation_method_name_2_method[allocation_method_name] if allocation_method_name else None,
                     per_wallet_start_year=per_wallet_start_year,
                 )

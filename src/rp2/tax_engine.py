@@ -36,7 +36,6 @@ from rp2.input_data import InputData
 from rp2.intra_transaction import IntraTransaction
 from rp2.logger import LOGGER
 from rp2.out_transaction import OutTransaction
-from rp2.per_wallet_configuration import PerWalletConfiguration
 from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2RuntimeError, RP2ValueError
 from rp2.transaction_set import TransactionSet
@@ -212,6 +211,8 @@ class _TaxResult(NamedTuple):
 # Reports also get what each wallet holds at the end of the configuration's to_date (ComputedData.wallet_lots), so that they can show each
 # wallet's actual cost basis. If to_date is before the switch, the holdings at that date come from universal application, and reports
 # show them like compute_tax() does (wallet_lots is None).
+# The per-wallet settings (time zone and unused basis allocation rule) come from the country section of the configuration (e.g. [country.us]):
+# it's an error if the configuration doesn't have them.
 # allocation_method is the unused basis allocation method of this asset (see PerWalletConfiguration.get_unused_basis_allocation_method()).
 # per_wallet_start_year is the first year of per-wallet application: it must be the start of a period of the country's application policy
 # that allows per-wallet application. If it's None, the first such period whose default mode is per-wallet is used.
@@ -220,16 +221,20 @@ def compute_tax_per_wallet(
     configuration: Configuration,
     accounting_engine: AccountingEngine,
     input_data: InputData,
-    per_wallet_configuration: PerWalletConfiguration,
     allocation_method: Optional[AbstractAccountingMethod] = None,
     per_wallet_start_year: Optional[int] = None,
 ) -> ComputedData:
     Configuration.type_check("configuration", configuration)
     AccountingEngine.type_check("accounting_engine", accounting_engine)
     InputData.type_check("input_data", input_data)
-    PerWalletConfiguration.type_check("per_wallet_configuration", per_wallet_configuration)
 
     start_year = _get_per_wallet_start_year(configuration.country.get_application_policy(), configuration.country, per_wallet_start_year)
+    per_wallet_configuration = configuration.per_wallet_configuration
+    if per_wallet_configuration is None:
+        raise RP2ValueError(
+            f"{input_data.asset}: per-wallet application needs the per-wallet settings (at least 'timezone') in the "
+            f"'country.{configuration.country.country_iso_code}' section of the configuration file"
+        )
     switch_timestamp = datetime(start_year, 1, 1, tzinfo=per_wallet_configuration.timezone)
 
     all_transactions = list(cast(Iterable[AbstractTransaction], input_data.create_all_transaction_set(configuration)))

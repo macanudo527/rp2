@@ -26,11 +26,11 @@ from per_wallet_common import (
     _ASSET,
     _BLOCKFI,
     _COINBASE,
-    _CONFIGURATION_PATH,
     _KRAKEN,
     _UTC,
     AbstractPerWalletTest,
     _allocation_config,
+    _create_configuration,
     _GainLoss,
     _Holding,
     _holdings,
@@ -40,7 +40,7 @@ from per_wallet_common import (
     _sorted,
 )
 
-from rp2.configuration import MAX_DATE, MIN_DATE, Configuration
+from rp2.configuration import MAX_DATE, MIN_DATE
 from rp2.gain_loss import GainLoss
 from rp2.in_transaction import InTransaction
 from rp2.localization import set_generation_language
@@ -59,7 +59,9 @@ class TestPerWalletReports(AbstractPerWalletTest):
         # Gain/losses on artificial lots (transfer destinations, unused basis allocation) must not break report generation, and Form 8949
         # "date acquired" must be the original acquisition date, not the transfer date.
         set_generation_language("en")
-        configuration = Configuration(_CONFIGURATION_PATH, US())
+        configuration = _create_configuration(
+            PerWalletConfiguration(timezone_name="UTC", unused_basis_allocation_method="fifo", unused_basis_allocation_wallet_order=(_COINBASE, _KRAKEN))
+        )
         input_data = self._create_input_data(
             configuration,
             [
@@ -69,14 +71,7 @@ class TestPerWalletReports(AbstractPerWalletTest):
                 _Out("o1", "2025-08-01T00:00:00+00:00", "Kraken", "300", "2.5"),
             ],
         )
-        per_wallet_configuration = PerWalletConfiguration(
-            timezone_name="UTC",
-            unused_basis_allocation_method="fifo",
-            unused_basis_allocation_wallet_order=(_COINBASE, _KRAKEN),
-        )
-        computed_data = compute_tax_per_wallet(
-            configuration, self._create_accounting_engine(None), input_data, per_wallet_configuration, AccountingMethodFIFO()
-        )
+        computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data, AccountingMethodFIFO())
         gain_losses = [gain_loss for gain_loss in computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)]
         self.assertTrue(any(gain_loss.acquired_lot is not None and gain_loss.acquired_lot.from_lot is not None for gain_loss in gain_losses))
         for gain_loss in gain_losses:
@@ -100,7 +95,7 @@ class TestPerWalletReports(AbstractPerWalletTest):
     # worth $200 paying a 0.1 unit fee, sell the 0.9 received units for $270.
     def test_transfer_fee_is_a_disposal_in_reports(self) -> None:
         set_generation_language("en")
-        configuration = Configuration(_CONFIGURATION_PATH, US())
+        configuration = _create_configuration()
         input_data = self._create_input_data(
             configuration,
             [
@@ -109,7 +104,7 @@ class TestPerWalletReports(AbstractPerWalletTest):
                 _Out("o1", "2025-03-01T00:00:00+00:00", "Kraken", "300", "0.9"),
             ],
         )
-        computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data, _UTC)
+        computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data)
         output_dir = Path("output") / Path("test_per_wallet_tax_engine_fee")
         shutil.rmtree(output_dir, ignore_errors=True)
         output_dir.mkdir(parents=True)
@@ -210,11 +205,11 @@ class TestPerWalletReports(AbstractPerWalletTest):
         ]
 
         set_generation_language("en")
-        configuration = Configuration(_CONFIGURATION_PATH, US())
+        configuration = _create_configuration()
         for case in cases:
             with self.subTest(name=case.description):
                 input_data = self._create_input_data(configuration, case.transactions)
-                computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data, _UTC)
+                computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data)
                 gain_losses = [gain_loss for gain_loss in computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)]
                 self.assertEqual(_sorted(self._to_tuples(gain_losses)), _sorted(self._want_tuples(case.want)))
 
@@ -363,13 +358,15 @@ class TestPerWalletReports(AbstractPerWalletTest):
         output_dir = Path("output") / Path("test_per_wallet_tax_engine_r04")
         for case in cases:
             with self.subTest(name=case.description):
-                configuration = Configuration(_CONFIGURATION_PATH, US(), from_date=case.from_date, to_date=case.to_date)
+                # Universal application runs without per-wallet settings, like the US before 2025.
+                per_wallet_configuration = None if case.universal else case.per_wallet_configuration
+                configuration = _create_configuration(per_wallet_configuration, from_date=case.from_date, to_date=case.to_date)
                 input_data = self._create_input_data(configuration, case.transactions)
                 engine = self._create_accounting_engine(None)
                 if case.universal:
                     computed_data = compute_tax(configuration, engine, input_data)
                 else:
-                    computed_data = compute_tax_per_wallet(configuration, engine, input_data, case.per_wallet_configuration, AccountingMethodFIFO())
+                    computed_data = compute_tax_per_wallet(configuration, engine, input_data, AccountingMethodFIFO())
                 wallet_lots = computed_data.wallet_lots
                 if case.universal or case.to_date < date(2025, 1, 1):
                     self.assertIsNone(wallet_lots)
@@ -412,7 +409,7 @@ class TestPerWalletReports(AbstractPerWalletTest):
     # The lots hold 0.99899999 coins (2 - 1.00100001), with $99.899999 of cost basis, while the balance is 0.999 (2 - 1 - 0.001).
     def test_inconsistent_sale_amounts_are_a_warning(self) -> None:
         set_generation_language("en")
-        configuration = Configuration(_CONFIGURATION_PATH, US())
+        configuration = _create_configuration()
         input_data = self._create_input_data(
             configuration,
             [
@@ -421,7 +418,7 @@ class TestPerWalletReports(AbstractPerWalletTest):
             ],
         )
         with self.assertLogs("rp2", level="WARNING") as logs:
-            computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data, _UTC)
+            computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data)
         self.assertTrue(any("the lots of Coinbase/Bob add up to 0.99899999" in message for message in logs.output), msg=str(logs.output))
         wallet_lots = computed_data.wallet_lots
         assert wallet_lots is not None

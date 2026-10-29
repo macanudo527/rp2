@@ -15,15 +15,19 @@
 # Shared helpers of the per-wallet application tests (test_per_wallet_tax_engine.py and test_per_wallet_reports.py): short-form transaction
 # descriptions, expected gain/losses, wallets, and an abstract test case that builds input data and accounting engines from them.
 
+import hashlib
 import unittest
+from datetime import date
+from pathlib import Path
 from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from prezzemolo.avl_tree import AVLTree
 
 from rp2.abstract_accounting_method import AbstractAccountingMethod
+from rp2.abstract_country import AbstractCountry
 from rp2.account import Account
 from rp2.accounting_engine import AccountingEngine
-from rp2.configuration import Configuration
+from rp2.configuration import MAX_DATE, MIN_DATE, Configuration
 from rp2.gain_loss import GainLoss
 from rp2.in_transaction import InTransaction
 from rp2.input_data import InputData
@@ -31,6 +35,7 @@ from rp2.intra_transaction import IntraTransaction
 from rp2.out_transaction import OutTransaction
 from rp2.per_wallet_configuration import PerWalletConfiguration
 from rp2.plugin.accounting_method.fifo import AccountingMethod as AccountingMethodFIFO
+from rp2.plugin.country.us import US
 from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.transaction_set import TransactionSet
 from rp2.wallet_lot import WalletLot
@@ -38,6 +43,7 @@ from rp2.wallet_lot import WalletLot
 _ASSET = "B1"
 _CONFIGURATION_PATH = "./config/test_data.ini"
 _UTC = PerWalletConfiguration(timezone_name="UTC")
+_CONFIGURATION_DIR = Path("output") / Path("per_wallet_configurations")
 
 
 # Short-form transaction descriptions.
@@ -105,6 +111,46 @@ def _holdings(wallet_lots: List[WalletLot]) -> List[_Holding]:
 
 def _allocation_config(order: Tuple[Account, ...]) -> PerWalletConfiguration:
     return PerWalletConfiguration(timezone_name="UTC", unused_basis_allocation_method="fifo", unused_basis_allocation_wallet_order=order)
+
+
+# Configuration of the per-wallet tests: the test configuration file plus, if per_wallet_configuration isn't None, a country section with its
+# settings (e.g. [country.us] with timezone = UTC). compute_tax_per_wallet() takes the settings from the configuration, so they are written
+# to a configuration file in the output directory and parsed and checked like those of a user's file.
+def _create_configuration(
+    per_wallet_configuration: Optional[PerWalletConfiguration] = _UTC,
+    country: Optional[AbstractCountry] = None,
+    from_date: date = MIN_DATE,
+    to_date: date = MAX_DATE,
+) -> Configuration:
+    country = country or US()
+    text = Path(_CONFIGURATION_PATH).read_text(encoding="utf-8")
+    if per_wallet_configuration is not None:
+        text += _get_country_section(country, per_wallet_configuration)
+    _CONFIGURATION_DIR.mkdir(parents=True, exist_ok=True)
+    path = _CONFIGURATION_DIR / Path(f"{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}.ini")
+    path.write_text(text, encoding="utf-8")
+    result = Configuration(str(path), country, from_date=from_date, to_date=to_date)
+    if result.per_wallet_configuration != per_wallet_configuration:
+        raise ValueError(f"The configuration file changed the per-wallet settings: {per_wallet_configuration} -> {result.per_wallet_configuration}")
+    return result
+
+
+# The country section with the given per-wallet settings, in the format of the configuration file (see docs/input_files.md).
+def _get_country_section(country: AbstractCountry, per_wallet_configuration: PerWalletConfiguration) -> str:
+    lines = ["", f"[country.{country.country_iso_code}]", f"timezone = {per_wallet_configuration.timezone_name}"]
+    if per_wallet_configuration.unused_basis_allocation_method:
+        lines.append(f"unused_basis_allocation_method = {per_wallet_configuration.unused_basis_allocation_method}")
+    if per_wallet_configuration.unused_basis_allocation_wallet_order:
+        lines.append(f"unused_basis_allocation_wallet_order = {_get_wallet_list(per_wallet_configuration.unused_basis_allocation_wallet_order)}")
+    for asset, method in sorted(per_wallet_configuration.asset_2_unused_basis_allocation_method.items()):
+        lines.append(f"unused_basis_allocation_method.{asset} = {method}")
+    for asset, wallet_order in sorted(per_wallet_configuration.asset_2_unused_basis_allocation_wallet_order.items()):
+        lines.append(f"unused_basis_allocation_wallet_order.{asset} = {_get_wallet_list(wallet_order)}")
+    return "\n".join(lines) + "\n"
+
+
+def _get_wallet_list(wallet_order: Tuple[Account, ...]) -> str:
+    return ", ".join(f"{account.exchange}/{account.holder}" for account in wallet_order)
 
 
 _COINBASE = Account("Coinbase", "Bob")

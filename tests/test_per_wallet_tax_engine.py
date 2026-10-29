@@ -34,6 +34,7 @@ from per_wallet_common import (
     _UTC,
     AbstractPerWalletTest,
     _allocation_config,
+    _create_configuration,
     _GainLoss,
     _GainLossTuple,
     _Holding,
@@ -45,6 +46,7 @@ from per_wallet_common import (
 )
 
 from rp2.abstract_accounting_method import AbstractAccountingMethod
+from rp2.abstract_country import AbstractCountry
 from rp2.abstract_transaction import AbstractTransaction
 from rp2.configuration import Configuration
 from rp2.gain_loss import GainLoss
@@ -69,7 +71,7 @@ class _Test:
     transactions: List[object]
     want: List[_GainLoss] = field(default_factory=list)
     want_error: str = ""
-    per_wallet_configuration: PerWalletConfiguration = _UTC
+    per_wallet_configuration: Optional[PerWalletConfiguration] = _UTC
     allocation_method: Optional[AbstractAccountingMethod] = None
     years_2_methods: Optional[Dict[int, AbstractAccountingMethod]] = None
     # With a single wallet per-wallet and universal application must produce the same result.
@@ -77,15 +79,15 @@ class _Test:
 
 
 class TestPerWalletTaxEngine(AbstractPerWalletTest):
-    def _run_test(self, test: _Test, country: object = None) -> None:
-        configuration = Configuration(_CONFIGURATION_PATH, country or US())  # type: ignore
+    def _run_test(self, test: _Test, country: Optional[AbstractCountry] = None) -> None:
+        configuration = _create_configuration(test.per_wallet_configuration, country)
         input_data = self._create_input_data(configuration, test.transactions)
         engine = self._create_accounting_engine(test.years_2_methods)
         if test.want_error:
             with self.assertRaisesRegex(RP2ValueError, test.want_error):
-                compute_tax_per_wallet(configuration, engine, input_data, test.per_wallet_configuration, test.allocation_method)
+                compute_tax_per_wallet(configuration, engine, input_data, test.allocation_method)
             return
-        computed_data = compute_tax_per_wallet(configuration, engine, input_data, test.per_wallet_configuration, test.allocation_method)
+        computed_data = compute_tax_per_wallet(configuration, engine, input_data, test.allocation_method)
         got: List[_GainLossTuple] = self._to_tuples([gain_loss for gain_loss in computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)])
         self.assertEqual(_sorted(got), _sorted(self._want_tuples(test.want)))
         if test.same_as_universal:
@@ -446,12 +448,11 @@ class TestPerWalletTaxEngine(AbstractPerWalletTest):
     # Runs per-wallet application with an unused basis allocation at the switch (wallet order: Coinbase, Kraken, BlockFi) and returns its
     # gain/losses and what each wallet holds at the end (see _holdings()).
     def _run_with_allocation(self, transactions: List[object], method: AbstractAccountingMethod) -> Tuple[List[_GainLossTuple], List[_Holding]]:
-        configuration = Configuration(_CONFIGURATION_PATH, US())
+        configuration = _create_configuration(_allocation_config((_COINBASE, _KRAKEN, _BLOCKFI)))
         computed_data = compute_tax_per_wallet(
             configuration,
             self._create_accounting_engine({1970: method}),
             self._create_input_data(configuration, transactions),
-            _allocation_config((_COINBASE, _KRAKEN, _BLOCKFI)),
             AccountingMethodFIFO(),
         )
         gain_losses = self._to_tuples([gain_loss for gain_loss in computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)])
@@ -604,21 +605,33 @@ class TestPerWalletTaxEngine(AbstractPerWalletTest):
             _Test(
                 description="JP",
                 transactions=[_In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "1")],
+                per_wallet_configuration=None,
                 want_error="Per-wallet application is not supported for country 'jp'",
             ),
             country=JP(),
         )
 
+    # The per-wallet settings come from the country section of the configuration: without them per-wallet application stops with an error.
+    def test_per_wallet_settings_are_required(self) -> None:
+        self._run_test(
+            _Test(
+                description="US without per-wallet settings",
+                transactions=[_In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "1")],
+                per_wallet_configuration=None,
+                want_error=r"B1: per-wallet application needs the per-wallet settings \(at least 'timezone'\) in the 'country.us' section",
+            )
+        )
+
     def test_per_wallet_start_year_must_match_the_country_policy(self) -> None:
         # The US policy switches to per-wallet application at the start of 2025: no other switch year is accepted.
-        configuration = Configuration(_CONFIGURATION_PATH, US())
+        configuration = _create_configuration()
         input_data = self._create_input_data(configuration, [_In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "1")])
         engine = self._create_accounting_engine(None)
         for year in (2024, 2026):
             with self.subTest(year=year):
                 with self.assertRaisesRegex(RP2ValueError, f"Per-wallet application can't start in {year} for country 'us'"):
-                    compute_tax_per_wallet(configuration, engine, input_data, _UTC, per_wallet_start_year=year)
-        computed_data = compute_tax_per_wallet(configuration, engine, input_data, _UTC, per_wallet_start_year=2025)
+                    compute_tax_per_wallet(configuration, engine, input_data, per_wallet_start_year=year)
+        computed_data = compute_tax_per_wallet(configuration, engine, input_data, per_wallet_start_year=2025)
         self.assertEqual(len(list(computed_data.gain_loss_set)), 0)
 
     def test_artificial_in_transaction_is_not_income(self) -> None:
