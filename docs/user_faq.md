@@ -330,7 +330,7 @@ Use an in-transaction (if receiving crypto) or out-transaction (if giving crypto
 > RP2 has no built-in model for this: there is no way to tag an in-transaction as "received as gift" so that the correct dual-basis rule applies automatically. **Workaround:** Record the in-transaction with the donor's original cost basis as the `spot_price` (converted to per-unit). Keep a note of the FMV at the gift date. When you later sell, manually determine which basis rule applies and adjust if necessary before filing — or consult a tax professional.
 >
 > **References:**
-> * [IRC §1015](https://www.law.cornell.edu/uscode/text/26/1015) (transferred basis for gifts): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1015&edition=prelim
+> * [IRC §1015](https://www.law.cornell.edu/uscode/text/26/1015) (transferred basis for gifts)
 > * [26 CFR §1.1015-1](https://www.ecfr.gov/current/title-26/section-1.1015-1) (IRS split-basis rule with worked example): https://www.law.cornell.edu/cfr/text/26/1.1015-1
 
 ### How to Handle Inherited Crypto?
@@ -342,7 +342,7 @@ Use an in-transaction (if receiving crypto) or out-transaction (if giving crypto
 >
 > **Workaround:** Enter the inherited crypto as a BUY-type in-transaction dated at the date of death, with `spot_price` set to the FMV at that date. This gives the correct stepped-up cost basis. However, RP2 will still compute the holding period from that date, so if you sell within 365 days of the inheritance date it will incorrectly classify the gain as short-term. You will need to manually override this classification on your tax return or consult your tax professional.
 >
-> **Reference:** [IRC §1014](https://www.law.cornell.edu/uscode/text/26/1014) (stepped-up basis): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1014&edition=prelim — [IRC §1223(11)](https://www.law.cornell.edu/uscode/text/26/1223) (automatic LTCG holding period for inherited property): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1223&edition=prelim
+> **Reference:** [IRC §1014](https://www.law.cornell.edu/uscode/text/26/1014) (stepped-up basis) — [IRC §1223(11)](https://www.law.cornell.edu/uscode/text/26/1223) (automatic LTCG holding period for inherited property)
 
 ### How to Handle Hard Forks?
 Use an in-transaction and mark the transaction type as HARDFORK. RP2 will collect gain/loss computations for all such transactions in a tab in the tax_report_us output. Also read question on [which tax forms to file](#which-crypto-tax-forms-to-file) and see the [input files](input_files.md) section of the documentation for format details.
@@ -414,7 +414,7 @@ RP2 has a LOST out-transaction type for crypto that is lost or stolen. RP2 compu
 > **Practical guidance:** The loss figure RP2 computes for LOST transactions may be useful for record-keeping and in case tax law changes, but do not assume it will automatically reduce your tax liability. Consult a tax professional before claiming any loss deduction for lost or stolen crypto.
 >
 > **References:**
-> * [IRC §165(h)(5)](https://www.law.cornell.edu/uscode/text/26/165) (TCJA personal casualty loss limitation): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section165&edition=prelim
+> * [IRC §165(h)(5)](https://www.law.cornell.edu/uscode/text/26/165) (TCJA personal casualty loss limitation)
 > * IRS Digital Assets FAQ Q64 (stolen/lost digital assets): https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-digital-asset-transactions
 
 ### How to Handle Fee-only DeFi Transactions?
@@ -486,7 +486,7 @@ Calling for help on this question: if you have insight on this please open an is
 >
 > If you trade regulated crypto futures, RP2's output will not correctly reflect these rules. Consult a tax professional and file Form 6781 (Gains and Losses From Section 1256 Contracts and Straddles) separately.
 >
-> **Reference:** [IRC §1256](https://www.law.cornell.edu/uscode/text/26/1256): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1256&edition=prelim
+> **Reference:** [IRC §1256](https://www.law.cornell.edu/uscode/text/26/1256)
 
 ### Important: Wash Sale Rules Do Not Currently Apply to Crypto
 
@@ -500,4 +500,4 @@ This means:
 >
 > **Stay current:** Check with a tax professional each year and watch for legislative changes, especially if you engage in tax-loss harvesting.
 >
-> **Reference:** [IRC §1091](https://www.law.cornell.edu/uscode/text/26/1091) (wash sale rule, currently applies only to stock and securities): https://uscode.house.gov/view.xhtml?req=granuleid:USC-prelim-title26-section1091&edition=prelim
+> **Reference:** [IRC §1091](https://www.law.cornell.edu/uscode/text/26/1091) (wash sale rule, currently applies only to stock and securities)
