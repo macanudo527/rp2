@@ -203,8 +203,8 @@ class _TaxResult(NamedTuple):
 
 
 # Per-wallet application (e.g. US from 2025, Treas. Reg. §1.1012-1(j)). The computation has three phases:
-# 1) before the switch (January 1 of the country's per-wallet start year, in the configured timezone): universal application, exactly as
-#    compute_tax() does;
+# 1) before the switch (the start of January 1st of the country's per-wallet start year, in the tax time zone: see
+#    Configuration.tax_timezone): universal application, exactly as compute_tax() does;
 # 2) at the switch: the lots that are still unused under universal application are allocated to the wallets that hold funds (Rev. Proc.
 #    2024-28 global allocation, see UnusedBasisAllocator);
 # 3) after the switch: TransferAnalyzer tracks lots per wallet and pairs every taxable event with lots of its own wallet.
@@ -230,15 +230,20 @@ def compute_tax_per_wallet(
 
     start_year = _get_per_wallet_start_year(configuration.country.get_application_policy(), configuration.country, per_wallet_start_year)
     per_wallet_configuration = configuration.per_wallet_configuration
-    if per_wallet_configuration is None:
+    # The tax time zone is the time zone of the per-wallet settings: it's None exactly when they are missing.
+    tax_timezone = configuration.tax_timezone
+    if per_wallet_configuration is None or tax_timezone is None:
         raise RP2ValueError(
             f"{input_data.asset}: per-wallet application needs the per-wallet settings (at least 'timezone') in the "
             f"'country.{configuration.country.country_iso_code}' section of the configuration file"
         )
-    switch_timestamp = datetime(start_year, 1, 1, tzinfo=per_wallet_configuration.timezone)
+    # The switch is the first instant of start_year in the tax time zone, the one in which tax years are computed: so a transaction is
+    # after the switch exactly when its tax year is start_year or later, and both phases use the accounting method of its tax year.
+    # Example with America/New_York and start year 2025: the switch is 2025-01-01T00:00:00-05:00, and 2025-01-01T03:00:00+09:00 (3 AM in
+    # Tokyo) is still December 31st, 2024 in New York, so it's before the switch.
+    switch_timestamp = datetime(start_year, 1, 1, tzinfo=tax_timezone)
 
     all_transactions = list(cast(Iterable[AbstractTransaction], input_data.create_all_transaction_set(configuration)))
-    _check_tax_year_boundary(all_transactions, switch_timestamp, start_year, per_wallet_configuration.timezone_name)
     universal_transactions = [transaction for transaction in all_transactions if transaction.timestamp < switch_timestamp]
     per_wallet_transactions = [transaction for transaction in all_transactions if transaction.timestamp >= switch_timestamp]
 
@@ -266,7 +271,14 @@ def compute_tax_per_wallet(
                 list(per_wallet_configuration.get_unused_basis_allocation_wallet_order(input_data.asset)),
             ).allocate()
         # Phase 3: per-wallet application after the switch.
-        LOGGER.info("%s: per-wallet application from %s (%d transactions)", input_data.asset, switch_timestamp, len(per_wallet_transactions))
+        LOGGER.info(
+            "%s: per-wallet application from %s (start of %d in %s, %d transactions)",
+            input_data.asset,
+            switch_timestamp.isoformat(),
+            start_year,
+            tax_timezone.key,
+            len(per_wallet_transactions),
+        )
         per_wallet_result = _compute_per_wallet_tax(configuration, accounting_engine, input_data.asset, start_year, per_wallet_transactions, allocated_lots)
     # The wallet holdings at to_date are only meaningful if to_date is on or after the switch.
     wallet_lots = per_wallet_result.wallet_lots if configuration.to_date >= switch_timestamp.date() else None
@@ -333,21 +345,6 @@ def _compute_per_wallet_tax(
     LOGGER.info("%s: per-wallet application: found %d wallets", asset, len(transfer_analysis_result.wallet_2_input_data))
     taxable_events = [transaction for transaction in transactions if transaction.is_taxable()]
     return _TaxResult(taxable_events, transfer_analysis_result.gain_loss_list, transfer_analysis_result.wallet_lots)
-
-
-# The tax year of a transaction is the year of its timestamp (in the timezone of the timestamp itself). A transaction whose tax year is on
-# one side of the switch while its instant is on the other side is ambiguous: rather than silently picking one, raise an error.
-def _check_tax_year_boundary(transactions: List[AbstractTransaction], switch_timestamp: datetime, start_year: int, timezone_name: str) -> None:
-    ambiguous_transactions = [
-        transaction for transaction in transactions if (transaction.timestamp < switch_timestamp) != (transaction.timestamp.year < start_year)
-    ]
-    if ambiguous_transactions:
-        raise RP2ValueError(
-            f"{len(ambiguous_transactions)} transaction(s) fall in tax year {start_year} (or later) by their own timestamp but before the switch to "
-            f"per-wallet application ({switch_timestamp}, timezone '{timezone_name}'), or vice versa: express their timestamps in timezone "
-            f"'{timezone_name}' or change the timezone in the country section of the configuration file (e.g. country.us). "
-            f"First one: {ambiguous_transactions[0]}"
-        )
 
 
 # Builds an InputData from a list of mixed transactions (InputData requires at least one acquisition).

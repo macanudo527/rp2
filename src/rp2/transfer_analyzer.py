@@ -234,9 +234,9 @@ class TransferAnalyzer:
         raise RP2TypeError(f"Unsupported accounting method for per-wallet application: {accounting_method}")
 
     def _get_accounting_method(self, transaction: AbstractTransaction) -> AbstractFeatureBasedAccountingMethod:
-        method = self.__years_2_accounting_methods.find_max_value_less_than(transaction.timestamp.year)
+        method = self.__years_2_accounting_methods.find_max_value_less_than(transaction.tax_year)
         if method is None:
-            raise RP2RuntimeError(f"Internal error: no accounting method assigned for year {transaction.timestamp.year}")
+            raise RP2RuntimeError(f"Internal error: no accounting method assigned for year {transaction.tax_year}")
         return method
 
     def _new_artificial_id(self) -> int:
@@ -437,8 +437,8 @@ class TransferAnalyzer:
     # Same as analyze(), but also returns the per-wallet gain/loss pairings of all taxable events and what each wallet holds at the end of
     # holdings_date. Transactions are processed in a single chronological pass (see _transaction_processing_order()), so every disposal or
     # transfer sees exactly the lots its wallet holds at that moment.
-    # The holdings are recorded when the pass reaches the first transaction dated after holdings_date (in the transaction's own timezone,
-    # like BalanceSet does), so that they match the balances at that date. Example: buy in January, sell in May, holdings_date in April:
+    # The holdings are recorded when the pass reaches the first transaction whose tax date (see Configuration.tax_timezone) is after
+    # holdings_date, like BalanceSet does, so that they match the balances at that date. Example: buy in January, sell in May, holdings_date in April:
     # the holdings include the January lot, untouched by the May sale.
     def analyze_and_pair(self, holdings_date: date = MAX_DATE) -> TransferAnalysisResult:
         # A datetime is also a date, but it can't be compared with the dates of the transactions.
@@ -458,7 +458,7 @@ class TransferAnalyzer:
         wallet_2_per_wallet_transactions: Dict[Account, PerWalletTransactions] = {}
         wallet_lots: Optional[List[WalletLot]] = None
         for transaction in all_transactions:
-            if wallet_lots is None and transaction.timestamp.date() > holdings_date:
+            if wallet_lots is None and transaction.tax_date > holdings_date:
                 wallet_lots = self._get_wallet_lots(wallet_2_per_wallet_transactions)
             if isinstance(transaction, InTransaction):
                 account = Account(transaction.exchange, transaction.holder)

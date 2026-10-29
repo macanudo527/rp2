@@ -246,10 +246,10 @@ def _load_accounting_method(accounting_method_name: str) -> AbstractAccountingMe
     return result
 
 
-# Tax years in which the input has transactions (the year of each timestamp, in its own timezone).
+# Tax years in which the input has transactions (see Configuration.tax_timezone).
 def _get_transaction_years(input_data: InputData) -> Set[int]:
     return {
-        transaction.timestamp.year
+        transaction.tax_year
         for transaction_set in (
             input_data.unfiltered_in_transaction_set,
             input_data.unfiltered_out_transaction_set,

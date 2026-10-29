@@ -19,6 +19,7 @@ from enum import Enum
 from pathlib import Path
 from threading import Lock
 from typing import Any, Dict, List, Optional, Set, Tuple
+from zoneinfo import ZoneInfo
 
 from dateutil.parser import parse
 from jsonschema import validate
@@ -177,6 +178,7 @@ class Configuration:  # pylint: disable=too-many-public-methods
         self.__country_section: Optional[SectionProxy] = None
         self.__application_mode: Optional[ApplicationMode] = None
         self.__per_wallet_configuration: Optional[PerWalletConfiguration] = None
+        self.__tax_timezone: Optional[ZoneInfo] = None
         self.__artificial_id_counter: int = 0
         self.__lock = Lock()
 
@@ -362,6 +364,8 @@ class Configuration:  # pylint: disable=too-many-public-methods
                 f"'{self.__country.country_iso_code}' always uses universal application"
             )
         self.__per_wallet_configuration = self._validate_per_wallet_fields(section, configuration_path)
+        # The time zone of the per-wallet settings is also the one of tax dates (see tax_timezone).
+        self.__tax_timezone = self.__per_wallet_configuration.timezone
 
     def _validate_per_wallet_fields(self, section: SectionProxy, configuration_path: str) -> PerWalletConfiguration:
         asset_2_allocation_method: Dict[str, str] = {}
@@ -470,6 +474,31 @@ class Configuration:  # pylint: disable=too-many-public-methods
     @property
     def application_mode(self) -> Optional[ApplicationMode]:
         return self.__application_mode
+
+    # Tax dates: the date and the year of a timestamp for tax purposes. RP2 uses them wherever a calendar date matters: date filters (-f and
+    # -t), tax years and yearly totals, the accounting method of each year, the switch to per-wallet application and holding periods. The
+    # timestamps don't change: reports show them as they are in the input, and transactions are still sorted by the instant they happen.
+    # If the country section of the configuration file has a time zone (e.g. timezone = America/New_York in [country.us]), tax dates are
+    # in that time zone, whatever the time zone of each timestamp. Example: 2025-12-31T23:30:00-08:00 (11:30 PM in Los Angeles) is 2:30 AM
+    # of January 1st, 2026 in New York, so its tax date is 2026-01-01 and its tax year is 2026. Otherwise, as RP2 always did, the tax date of a
+    # timestamp is the date in its own time zone (2025-12-31 in the example).
+    @property
+    def tax_timezone(self) -> Optional[ZoneInfo]:
+        return self.__tax_timezone
+
+    # The given timestamp in the tax time zone (the same instant), or the timestamp itself if there is no tax time zone (see tax_timezone).
+    def get_tax_timestamp(self, timestamp: datetime) -> datetime:
+        if not isinstance(timestamp, datetime) or timestamp.utcoffset() is None:
+            raise RP2TypeError(f"Parameter 'timestamp' is not a timezone-aware datetime: {timestamp}")
+        if self.__tax_timezone is None:
+            return timestamp
+        return timestamp.astimezone(self.__tax_timezone)
+
+    def get_tax_date(self, timestamp: datetime) -> date:
+        return self.get_tax_timestamp(timestamp).date()
+
+    def get_tax_year(self, timestamp: datetime) -> int:
+        return self.get_tax_timestamp(timestamp).year
 
     def __get_table_constructor_argument_pack(self, data: List[Any], table_type: str, header: Dict[str, int]) -> Dict[str, Any]:
         if not isinstance(data, List):

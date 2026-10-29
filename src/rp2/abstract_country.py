@@ -78,8 +78,9 @@ class AbstractCountry:
     def get_long_term_capital_gain_period(self) -> int:
         raise NotImplementedError("Abstract function")
 
-    # True if an asset acquired at acquisition_timestamp and disposed of at disposal_timestamp was held long enough to be long-term.
-    # The default counts whole days; countries whose law measures the holding period by calendar dates override it.
+    # True if an asset acquired at acquisition_timestamp and disposed of at disposal_timestamp was held long enough to be long-term. The
+    # timestamps are in the tax time zone (see Configuration.tax_timezone), so their dates are tax dates. The default counts whole days
+    # (24-hour periods: the time zone doesn't change them); countries whose law measures the holding period by calendar dates override it.
     def is_long_term_capital_gain(self, acquisition_timestamp: datetime, disposal_timestamp: datetime) -> bool:
         return (disposal_timestamp - acquisition_timestamp).days > self.get_long_term_capital_gain_period()
 

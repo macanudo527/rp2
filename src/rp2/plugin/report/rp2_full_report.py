@@ -533,11 +533,11 @@ class Generator(AbstractODSGenerator):
             visual_style = "taxable_event"
             highlighted_style = "highlighted"
         if year == 0:
-            year = transaction.timestamp.year
-        if transaction.timestamp.year != year:
+            year = transaction.tax_year
+        if transaction.tax_year != year:
             visual_style = f"{visual_style}_border"
             highlighted_style = f"{highlighted_style}_border"
-            year = transaction.timestamp.year
+            year = transaction.tax_year
         return _TransactionVisualStyle(year, visual_style, highlighted_style)
 
     @staticmethod
@@ -565,7 +565,7 @@ class Generator(AbstractODSGenerator):
             highlighted_style: str
             transaction_visual_style: _TransactionVisualStyle = self.__get_transaction_visual_style(transaction, year)
             year = transaction_visual_style.year
-            border_style = self.__get_border_style(entry.timestamp.year, year)
+            border_style = self.__get_border_style(entry.tax_year, year)
             border_suffix = border_style.border_suffix
             visual_style = transaction_visual_style.visual_style
             highlighted_style = transaction_visual_style.highlighted_style
@@ -815,9 +815,9 @@ class Generator(AbstractODSGenerator):
         for entry in gain_loss_set:
             gain_loss: GainLoss = cast(GainLoss, entry)
             border_suffix: str = ""
-            border_style = self.__get_border_style(gain_loss.taxable_event.timestamp.year, year)
-            if gain_loss.taxable_event.timestamp.year != year:
-                self.__tax_sheet_year_2_row[_AssetAndYear(asset, gain_loss.taxable_event.timestamp.year)] = row_index + 1
+            border_style = self.__get_border_style(gain_loss.taxable_event.tax_year, year)
+            if gain_loss.taxable_event.tax_year != year:
+                self.__tax_sheet_year_2_row[_AssetAndYear(asset, gain_loss.taxable_event.tax_year)] = row_index + 1
             year = border_style.year
             border_suffix = border_style.border_suffix
             transparent_style: str = f"transparent{border_suffix}"

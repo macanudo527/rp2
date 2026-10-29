@@ -363,22 +363,30 @@ class TestPerWalletTaxEngine(AbstractPerWalletTest):
                 want=[_GainLoss("o1", "i1", "1", "100", "100", False)],
             ),
             _Test(
-                description="Timezone: 2025-01-01 03:00 JST is 2024 in New York: the transaction is ambiguous and must be fixed by the user",
+                description="Time zone: 2025-01-01 03:00 in Tokyo is still 2024 in New York, so the sale is universal (FIFO uses the Coinbase lot)",
                 transactions=[
-                    _In("i1", "2025-01-01T03:00:00+09:00", "Coinbase", "Buy", "100", "1"),
-                    _Out("o1", "2025-02-01T00:00:00+00:00", "Coinbase", "200", "1"),
+                    _In("i1", "2024-06-01T00:00:00+00:00", "Coinbase", "Buy", "100", "1"),
+                    _In("i2", "2024-07-01T00:00:00+00:00", "Kraken", "Buy", "300", "1"),
+                    _Out("o1", "2025-01-01T03:00:00+09:00", "Kraken", "500", "1"),
                 ],
-                per_wallet_configuration=PerWalletConfiguration(timezone_name="America/New_York"),
-                want_error="fall in tax year 2025 .* but before the switch to per-wallet application",
+                per_wallet_configuration=PerWalletConfiguration(
+                    timezone_name="America/New_York", unused_basis_allocation_method="fifo", unused_basis_allocation_wallet_order=(_COINBASE, _KRAKEN)
+                ),
+                allocation_method=AccountingMethodFIFO(),
+                want=[_GainLoss("o1", "i1", "1", "100", "400", False)],
             ),
             _Test(
-                description="Timezone: 2025-01-01 03:00 JST with the switch in Tokyo time is per-wallet",
+                description="Time zone: in Tokyo time the same sale is after the switch, so it can only use the lot allocated to Kraken",
                 transactions=[
-                    _In("i1", "2025-01-01T03:00:00+09:00", "Coinbase", "Buy", "100", "1"),
-                    _Out("o1", "2025-02-01T00:00:00+00:00", "Coinbase", "200", "1"),
+                    _In("i1", "2024-06-01T00:00:00+00:00", "Coinbase", "Buy", "100", "1"),
+                    _In("i2", "2024-07-01T00:00:00+00:00", "Kraken", "Buy", "300", "1"),
+                    _Out("o1", "2025-01-01T03:00:00+09:00", "Kraken", "500", "1"),
                 ],
-                per_wallet_configuration=PerWalletConfiguration(timezone_name="Asia/Tokyo"),
-                want=[_GainLoss("o1", "i1", "1", "100", "100", False)],
+                per_wallet_configuration=PerWalletConfiguration(
+                    timezone_name="Asia/Tokyo", unused_basis_allocation_method="fifo", unused_basis_allocation_wallet_order=(_COINBASE, _KRAKEN)
+                ),
+                allocation_method=AccountingMethodFIFO(),
+                want=[_GainLoss("o1", "i2", "1", "300", "200", False)],
             ),
             _Test(
                 description="Same timestamp: a transfer arriving at the same instant as a sale is available to the sale (In, Intra, Out order)",

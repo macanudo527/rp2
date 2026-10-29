@@ -48,7 +48,7 @@ class US(AbstractCountry):
     # the day you acquired the property. The day you disposed of the property is part of your holding period". So the holding period
     # is measured in calendar dates, not in days: it's long-term if the disposal date is after the first anniversary of the acquisition
     # date (e.g. bought 2023-03-01: long-term from 2024-03-02, even though 2024-03-01 is already 366 days later because of February 29th).
-    # Each date is the one of its own timestamp (the same convention used for tax years).
+    # The dates are tax dates (the timestamps are in the tax time zone, see Configuration.tax_timezone), the same used for tax years.
     def is_long_term_capital_gain(self, acquisition_timestamp: datetime, disposal_timestamp: datetime) -> bool:
         return disposal_timestamp.date() > acquisition_timestamp.date() + relativedelta(years=1)
 

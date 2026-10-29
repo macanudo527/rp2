@@ -42,7 +42,9 @@ class _Dataset(NamedTuple):
 
 
 # All these datasets end before 2025, so the US application policy uses universal application for all of them: adding the country section
-# (with the per-wallet settings) must not change the output, which is checked against golden files in test_ods_output_diff.py.
+# (with the per-wallet settings) must not change the output, which is checked against golden files in test_ods_output_diff.py. The time zone
+# of the section is also the one of tax dates, but these datasets have no timestamps that fall on a different date in New York (see
+# test_tax_dates.py for timestamps that do).
 _DATASETS: List[_Dataset] = [
     _Dataset("crypto_example", "crypto_example", AbstractTestODSOutputDiff.METHODS, True),
     _Dataset("test_data", "test_data", AbstractTestODSOutputDiff.METHODS, True),

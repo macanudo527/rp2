@@ -209,7 +209,10 @@ class AccountingEngine:
         taxable_event_amount: RP2Decimal,
         acquired_lot_amount: RP2Decimal,
     ) -> TaxableEventAndAcquiredLot:
-        acquired_lot_and_amounts = self.get_acquired_lot_for_timestamp(taxable_event.timestamp, acquired_lot, taxable_event_amount, acquired_lot_amount)
+        # The accounting method is the one of the taxable event's tax year: its timestamp is converted to the tax time zone (see
+        # Configuration.tax_timezone). It's the same instant, so the search of lots acquired before it is unaffected.
+        tax_timestamp = taxable_event.configuration.get_tax_timestamp(taxable_event.timestamp)
+        acquired_lot_and_amounts = self.get_acquired_lot_for_timestamp(tax_timestamp, acquired_lot, taxable_event_amount, acquired_lot_amount)
         return TaxableEventAndAcquiredLot(
             taxable_event=taxable_event,
             acquired_lot=acquired_lot_and_amounts.acquired_lot,
@@ -217,6 +220,7 @@ class AccountingEngine:
             acquired_lot_amount=acquired_lot_and_amounts.acquired_lot_amount,
         )
 
+    # timestamp is the time of the taxable event in the tax time zone (see Configuration.tax_timezone): its year selects the accounting method.
     def get_acquired_lot_for_timestamp(
         self,
         timestamp: datetime,

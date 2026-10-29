@@ -126,7 +126,7 @@ class ComputedData:
         fiat_in_with_fee_running_sum: RP2Decimal = ZERO
         for entry in unfiltered_in_transaction_set:
             # from_date is not used when computing average price per unit (because we always start from the beginning): only to_date is relevant.
-            if entry.timestamp.date() > to_date:
+            if entry.tax_date > to_date:
                 break
             transaction: InTransaction = cast(InTransaction, entry)
             crypto_in_running_sum += transaction.crypto_in
@@ -149,10 +149,10 @@ class ComputedData:
         value: _YearlyGainLossAmounts
         for entry in unfiltered_gain_loss_set:
             gain_loss: GainLoss = cast(GainLoss, entry)
-            if gain_loss.taxable_event.timestamp.date() > to_date:
+            if gain_loss.taxable_event.tax_date > to_date:
                 break
             key = _YearlyGainLossId(
-                gain_loss.taxable_event.timestamp.year,
+                gain_loss.taxable_event.tax_year,
                 gain_loss.asset,
                 gain_loss.taxable_event.transaction_type,
                 gain_loss.is_long_term_capital_gains(),
@@ -275,7 +275,7 @@ class ComputedData:
             if not gain_loss.acquired_lot:
                 continue
             original_lot = gain_loss.acquired_lot.original_lot
-            if original_lot.timestamp.date() < from_date or original_lot.timestamp.date() > to_date:
+            if not from_date <= original_lot.tax_date <= to_date:
                 continue
             self.__in_lot_sold_percentage[original_lot] = (
                 self.__in_lot_sold_percentage.setdefault(original_lot, ZERO) + gain_loss.crypto_amount / original_lot.crypto_in

@@ -85,8 +85,8 @@ ods_parser.py → InputData (universal: all transactions by asset)
 tax_engine.compute_tax_per_wallet():
   - rp2_main resolves each asset's mode per year from country.get_application_policy() (ApplicationPolicy) and the optional
     application_mode choice; per-wallet years need the [country.us] per-wallet fields (else RP2ValueError, no silent fallback)
-  - switch instant = Jan 1 of the first per-wallet policy period, in [country.us] timezone;
-    transactions whose own-timestamp year disagrees with the switch → RP2ValueError (never guessed)
+  - switch instant = Jan 1 of the first per-wallet policy period, in [country.us] timezone (the tax time zone: every date and year is
+    computed in it, see "Tax Dates and Time Zones" below, so a transaction's phase always agrees with its tax year)
   - before the switch: universal application, identical to compute_tax()
   - at the switch: UnusedBasisAllocator assigns the lots still unused under universal application to the
     wallets holding funds (Rev. Proc. 2024-28 global allocation; explicit config if > 1 funded wallet),
@@ -164,8 +164,9 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 - `tests/test_per_wallet_reports.py` — per-wallet report output, checked in actual ODS cells (transfer fees, remaining basis, artificial lots).
 - `tests/per_wallet_common.py` — shared helpers of the two files above: short-form transactions (`_In`, `_Out`, `_Intra`), expected gain/losses, wallets, `AbstractPerWalletTest` and `_create_configuration()` (a test configuration file with the `[country.us]` section of the given per-wallet settings: `compute_tax_per_wallet()` reads them from the configuration).
 - `tests/test_per_wallet_properties.py` — hypothesis property tests: wallet lots = wallet balance after each step, basis/lot conservation, single wallet per-wallet == universal, JP universal results unaffected.
-- `tests/test_ods_output_diff_per_wallet.py` — CLI: country section doesn't change pre-2025 output; 2025 data needs `[country.us]`; conflicting `application_mode` and other countries' sections are rejected; `-w` no longer exists.
+- `tests/test_ods_output_diff_per_wallet.py` — CLI: country section doesn't change pre-2025 output (the datasets' timestamps fall on the same dates in New York); 2025 data needs `[country.us]`; conflicting `application_mode` and other countries' sections are rejected; `-w` no longer exists.
 - `tests/test_application_policy.py` — `ApplicationPolicy`: per-year modes, explicit choices, switch year, policy validation.
+- `tests/test_tax_dates.py` — tax dates in the configured time zone (R06): method year, switch, holding period (winter/summer), ordering across a DST change, report filters and dates, computer time zone, other countries unchanged.
 
 - `tests/test_transfer_analysis_semantics_independent.py` — transfer analysis tests whose expected results do not depend on which accounting method is used for transfer semantics (e.g., single-lot transfers).
 - `tests/test_transfer_analysis_semantics_dependent.py` — transfer analysis tests whose results differ based on FIFO vs. LIFO vs. HIFO transfer semantics.
@@ -199,6 +200,9 @@ RP2 has no dedicated slash transaction type. Involuntary stake losses (slashing)
 
 ### Same-Timestamp Ordering
 When two transactions share the same timestamp, their relative order is determined by their row number in the input spreadsheet. For LIFO and HIFO methods, swapping same-timestamp rows changes which lot is selected, potentially altering the tax outcome with no warning. In per-wallet application `TransferAnalyzer` orders same-timestamp transactions as In, Intra, Out, then by row, so funds that arrive at an instant can be disposed of at the same instant.
+
+### Tax Dates and Time Zones
+`Configuration.tax_timezone` is the `timezone` of the country section (only countries whose policy allows per-wallet application, i.e. the US, can set it). When it's set, every calendar date and year derived from a timestamp is computed in that zone (`Configuration.get_tax_timestamp()`/`get_tax_date()`/`get_tax_year()`, `AbstractEntry.tax_date`/`tax_year`): date filters, `BalanceSet`, yearly gain/loss, the accounting method of each year (`AccountingEngine` and `TransferAnalyzer`), the per-wallet switch, holding-period inputs (`GainLoss` converts both timestamps before calling `AbstractCountry.is_long_term_capital_gain()`) and report dates and years. Without it, a tax date is the date of the timestamp in its own zone (the behavior of RP2 1.7.2). Don't use `timestamp.date()` or `timestamp.year` for tax logic. Timestamps are never modified and ordering is by instant. The zone is resolved with `zoneinfo`: IANA identifiers only (`UTC` or Area/Location), with the `tzdata` package as the data source where the system has none (Windows).
 
 ### Universal Lot Pool (default path)
 All accounting methods (FIFO, LIFO, HIFO, LOFO) operate on a single global pool of lots per asset, regardless of which exchange or wallet the lots are held in. Per-wallet application is selected per year by the country's `get_application_policy()` (currently only the US allows it, from 2025) and needs the `[country.us]` config section. Balance enforcement IS per-account (via `BalanceSet`), but lot selection is global in the universal path.

@@ -126,7 +126,7 @@ class BalanceSet:
 
         # Balances for bought and earned currency
         for transaction in transactions:
-            if transaction.timestamp.date() > to_date:
+            if transaction.tax_date > to_date:
                 break
             if isinstance(transaction, InTransaction):
                 in_transaction: InTransaction = transaction
