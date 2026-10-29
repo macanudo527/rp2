@@ -361,7 +361,9 @@ class TransferAnalyzer:
             gain_loss_list.append(GainLoss(self.__configuration, piece.amount, transaction, piece.acquired_lot))
 
     # A transfer between wallets: the sent units are taken from the source wallet; the fee (sent - received) is paid with the first of them,
-    # the rest arrive in the destination wallet.
+    # the rest arrive in the destination wallet. The destination wallet gets lots (and, if it's new, is created) only when units arrive: a
+    # transfer that receives nothing gives it nothing. Example: send 1 coin from Coinbase to Kraken and receive 0 (the whole coin went to
+    # fees): the coin is disposed of as a fee from Coinbase, and Kraken, if it never received anything before, still doesn't exist.
     def _process_intra_transaction(
         self, wallet_2_per_wallet_transactions: Dict[Account, PerWalletTransactions], transaction: IntraTransaction, gain_loss_list: List[GainLoss]
     ) -> None:
@@ -370,7 +372,6 @@ class TransferAnalyzer:
         from_per_wallet_transactions = self._get_existing_per_wallet_transactions(wallet_2_per_wallet_transactions, from_account, transaction)
         # IntraTransactions are added to from_per_wallet_transactions.
         from_per_wallet_transactions.intra_transactions.add_entry(transaction)
-        to_per_wallet_transactions = self._get_or_create_per_wallet_transactions(wallet_2_per_wallet_transactions, to_account)
 
         pieces, missing_amount = from_per_wallet_transactions.take(self._get_accounting_method(transaction), transaction.crypto_sent)
         if missing_amount > ZERO:
@@ -389,6 +390,7 @@ class TransferAnalyzer:
                     piece.acquired_lot, from_per_wallet_transactions.get_actual_amount(piece.acquired_lot) + piece.amount
                 )
             else:
+                to_per_wallet_transactions = self._get_or_create_per_wallet_transactions(wallet_2_per_wallet_transactions, to_account)
                 self._deliver_received_piece(to_per_wallet_transactions, to_account, transaction, piece)
 
     # Splits the lot pieces taken for a transfer into fee pieces and received pieces. The fee is taken from the first pieces, like universal

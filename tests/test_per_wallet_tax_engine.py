@@ -607,6 +607,74 @@ class TestPerWalletTaxEngine(AbstractPerWalletTest):
                     ]
                     self.assertEqual(got_holdings, want_holdings)
 
+    # R09 from the review of eprbell/rp2#155: a transfer that receives nothing, e.g. 1 coin sent and 0 received because the whole coin went to
+    # fees.
+    #
+    # The rule in plain English: the coins sent minus the coins received are the transfer fee, and the coins used to pay a transfer fee are
+    # disposed of (IRS FAQ A81 and A97). If nothing is received, the whole amount sent is the fee: it's a disposal from the source wallet, and
+    # the destination wallet gets nothing. This used to create an empty destination wallet, and the run stopped with "IN transaction set is
+    # empty".
+    #
+    # Example: buy 2 coins for $100 each on Coinbase, then send 1 to Kraken when it's worth $150 and receive 0. The fee is the whole coin: $150
+    # of proceeds, $100 of cost basis, $50 of gain. Coinbase still holds the other coin, and Kraken gets nothing (it isn't even created if it
+    # never received anything before), as in universal application.
+    def test_zero_receipt_transfer(self) -> None:
+        class _Case(NamedTuple):
+            description: str
+            transactions: List[object]
+            # What each wallet holds at the end: (wallet, original lot, amount, cost basis, acquisition date).
+            want_holdings: List[Tuple[str, str, str, str, str]]
+            # The wallets of the transfer analysis.
+            want_wallets: List[str]
+
+        purchase = _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "2")
+        zero_receipt = _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "1", "0")
+        coinbase_holding = ("Coinbase", "i1", "1", "100", "2025-01-02")
+        cases = [
+            _Case("a destination that never received anything isn't created", [purchase, zero_receipt], [coinbase_holding], ["Coinbase"]),
+            _Case(
+                "a destination with funds gets no new lot",
+                [purchase, _In("i2", "2025-01-03T00:00:00+00:00", "Kraken", "Buy", "120", "1"), zero_receipt],
+                [coinbase_holding, ("Kraken", "i2", "1", "120", "2025-01-03")],
+                ["Coinbase", "Kraken"],
+            ),
+            _Case(
+                "a transfer to the same wallet",
+                [purchase, _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Coinbase", "150", "1", "0")],
+                [coinbase_holding],
+                ["Coinbase"],
+            ),
+        ]
+        want = _sorted(self._want_tuples([_GainLoss("t1", "i1", "1", "100", "50", False)]))
+        for case in cases:
+            with self.subTest(name=case.description):
+                configuration = _create_configuration()
+                input_data = self._create_input_data(configuration, case.transactions)
+                computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data)
+                got = self._to_tuples([gain_loss for gain_loss in computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)])
+                self.assertEqual(_sorted(got), want)
+                universal_computed_data = compute_tax(configuration, self._create_accounting_engine(None), input_data)
+                universal = self._to_tuples([gain_loss for gain_loss in universal_computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)])
+                self.assertEqual(_sorted(universal), want)
+                wallet_lots = computed_data.wallet_lots
+                assert wallet_lots is not None
+                want_holdings: List[_Holding] = [
+                    (wallet, lot, RP2Decimal(amount), RP2Decimal(basis), day) for wallet, lot, amount, basis, day in case.want_holdings
+                ]
+                self.assertEqual(_holdings(wallet_lots), want_holdings)
+                wallets = sorted(
+                    account.exchange for account in TransferAnalyzer(configuration, AccountingMethodFIFO(), input_data).analyze_and_pair().wallet_2_input_data
+                )
+                self.assertEqual(wallets, case.want_wallets)
+
+        # Nothing arrived on Kraken, so it has nothing to sell.
+        configuration = _create_configuration()
+        input_data = self._create_input_data(configuration, [purchase, zero_receipt, _Out("o1", "2025-03-01T00:00:00+00:00", "Kraken", "200", "0.5")])
+        with self.assertRaisesRegex(
+            RP2ValueError, r"Insufficient balance on Account\(exchange='Kraken', holder='Bob'\): no funds were ever received by this account"
+        ):
+            compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data)
+
     def test_per_wallet_is_rejected_for_japan(self) -> None:
         # Japan uses universal application (total/moving average, pooled across all wallets): per-wallet code must never run.
         self._run_test(

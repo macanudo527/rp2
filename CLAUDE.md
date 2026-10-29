@@ -160,10 +160,10 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 
 #### Per-Wallet and Global Allocation Tests (new)
 
-- `tests/test_per_wallet_tax_engine.py` — end-to-end, hand-computed examples for `compute_tax_per_wallet` (edge cases: fees, #149, holding period, allocation, timezone boundary, same-timestamp order, cycles, method change, dust).
-- `tests/test_per_wallet_reports.py` — per-wallet report output, checked in actual ODS cells (transfer fees, remaining basis, artificial lots).
+- `tests/test_per_wallet_tax_engine.py` — end-to-end, hand-computed examples for `compute_tax_per_wallet` (edge cases: fees, zero-receipt transfers, #149, holding period, allocation, timezone boundary, same-timestamp order, cycles, method change, dust).
+- `tests/test_per_wallet_reports.py` — per-wallet report output, checked in actual ODS cells (transfer fees, zero-receipt transfers, remaining basis, artificial lots).
 - `tests/per_wallet_common.py` — shared helpers of the two files above: short-form transactions (`_In`, `_Out`, `_Intra`), expected gain/losses, wallets, `AbstractPerWalletTest` and `_create_configuration()` (a test configuration file with the `[country.us]` section of the given per-wallet settings: `compute_tax_per_wallet()` reads them from the configuration).
-- `tests/test_per_wallet_properties.py` — hypothesis property tests: wallet lots = wallet balance after each step, basis/lot conservation, single wallet per-wallet == universal, JP universal results unaffected.
+- `tests/test_per_wallet_properties.py` — hypothesis property tests (random histories include zero-receipt transfers): wallet lots = wallet balance after each step, basis/lot conservation, single wallet per-wallet == universal, JP universal results unaffected.
 - `tests/test_ods_output_diff_per_wallet.py` — CLI: country section doesn't change pre-2025 output (the datasets' timestamps fall on the same dates in New York); 2025 data needs `[country.us]`; conflicting `application_mode` and other countries' sections are rejected; `-w` no longer exists.
 - `tests/test_application_policy.py` — `ApplicationPolicy`: per-year modes, explicit choices, switch year, policy validation.
 - `tests/test_tax_dates.py` — tax dates in the configured time zone (R06): method year, switch, holding period (winter/summer), ordering across a DST change, report filters and dates, computer time zone, other countries unchanged.

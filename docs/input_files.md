@@ -94,7 +94,7 @@ Here follows an example of an input spreadsheet with 2 sheets (one for BTC and o
   * **to_holder**: owner of the exchange account or wallet to which the transfer of cryptocurrency occurred. Typically this is the same value as from_holder (unless multiple people are filing taxes jointly). It must match one of the values in the **holders** section of the config file.
   * **spot_price** (optional): value of 1 unit of the given cryptocurrency at the time the transaction occurred. Sometimes if fee is zero, exchanges don't provide this value.
   * **crypto_sent**: how much of the given cryptocurrency was sent with the transaction.
-  * **crypto_received**: how much of the given cryptocurrency was received with the transaction.
+  * **crypto_received**: how much of the given cryptocurrency was received with the transaction. The difference between crypto_sent and crypto_received is the transfer fee, a taxable disposal (see [If I Transfer Cryptocurrency Between Two Accounts I Own, Is the Fee Taxable?](user_faq.md#if-i-transfer-cryptocurrency-between-two-accounts-i-own-is-the-fee-taxable)). It can be 0, if the whole amount sent went to fees: then the whole amount is the fee and the destination receives nothing. Coins that were lost or stolen rather than paid as a fee are better described by a LOST out-transaction.
   * **unique_id** (optional): hash of the transaction, or in the case of some special off-chain transfers (like from Coinbase to Coinbase Pro) exchange-specific unique identifier for the transaction.
   * **notes** (optional): user-provided description of the transaction.
 

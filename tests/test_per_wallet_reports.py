@@ -129,6 +129,47 @@ class TestPerWalletReports(AbstractPerWalletTest):
         got_sale_rows: List[List[str]] = [row[:10] for row in data_rows("Capital Gains")]
         self.assertEqual(got_sale_rows, want_sale_rows)
 
+    # R09 from the review of eprbell/rp2#155: a transfer that receives nothing (the whole amount went to fees) must not break the reports.
+    # Example: buy 2 coins for $100 each on Coinbase, then send 1 to Kraken when it's worth $150 and receive 0. The whole coin is the fee,
+    # shown like any transfer fee (INTRA / MOVE, with its source lot and transfer): $150 of proceeds, $100 of cost basis, $50 of gain. Open
+    # Positions shows only Coinbase, with the coin it still holds: Kraken never received anything.
+    def test_zero_receipt_transfer_in_reports(self) -> None:
+        set_generation_language("en")
+        configuration = _create_configuration()
+        input_data = self._create_input_data(
+            configuration,
+            [
+                _In("i1", "2025-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "2"),
+                _Intra("t1", "2025-02-01T00:00:00+00:00", "Coinbase", "Kraken", "150", "1", "0"),
+            ],
+        )
+        computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data)
+        output_dir = Path("output") / Path("test_per_wallet_tax_engine_r09")
+        shutil.rmtree(output_dir, ignore_errors=True)
+        output_dir.mkdir(parents=True)
+        for generator in (OpenPositionsGenerator(), FullReportGenerator(), TaxReportUSGenerator()):
+            generator.generate(US(), {1970: "fifo"}, {_ASSET: computed_data}, str(output_dir), "r09_", MIN_DATE, MAX_DATE, "en")
+        self.assertEqual(len(list(output_dir.glob("r09_*.ods"))), 3)
+
+        # Columns: amount, asset, date acquired, date sold or transacted, proceeds, cost basis, (f), (g), gain or loss, then the additional
+        # transaction information (type, acquired lot fraction and id, taxable event fraction and id, capital gains type, full timestamp).
+        tax_report_rows = read_sheet_rows(output_dir / Path("r09_fifo_tax_report_us.ods"), "Investment Expenses") or []
+        want_fee_rows: List[List[str]] = [
+            ["1.0", "B1", "01/02/2025", "02/01/2025", "150.0", "100.0", "", "", "50.0", "INTRA / MOVE"]
+            + ["1/1: 1.00000000 of 2.00000000 B1", "i1", "1/1: 1.00000000 of 1.00000000 B1", "t1", "SHORT", "2025-02-01 00:00:00+00:00"]
+        ]
+        fee_rows: List[List[str]] = [row for row in tax_report_rows if row[1:2] == [_ASSET]]
+        self.assertEqual(fee_rows, want_fee_rows)
+
+        # Open Positions, "Asset" sheet: (holder, balance, cost basis); "Asset - Exchange" sheet: (holder, wallet, balance, cost basis).
+        open_positions_path = output_dir / Path("r09_fifo_open_positions.ods")
+        got_by_asset = [(row[1], row[2], row[4]) for row in read_sheet_rows(open_positions_path, "Asset") or [] if row[:1] == [_ASSET]]
+        got_by_exchange = [(row[1], row[2], row[3], row[5]) for row in read_sheet_rows(open_positions_path, "Asset - Exchange") or [] if row[:1] == [_ASSET]]
+        want_by_asset: List[Tuple[str, str, str]] = [("Bob", "1.0", "100.0")]
+        want_by_exchange: List[Tuple[str, str, str, str]] = [("Bob", "Coinbase", "1.0", "100.0")]
+        self.assertEqual(got_by_asset, want_by_asset)
+        self.assertEqual(got_by_exchange, want_by_exchange)
+
     # R05 from the review of eprbell/rp2#155: after a transfer fee, the basis left in the reports must match the coins actually left.
     #
     # The rule in plain English: the coins paid as a transfer fee are treated as sold (IRS FAQ A81, A97), so they use up their own share of

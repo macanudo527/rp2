@@ -83,8 +83,9 @@ def _amount(draw: st.DrawFn, maximum: RP2Decimal) -> RP2Decimal:
     return RP2Decimal(draw(st.integers(min_value=1, max_value=int(maximum / _QUANTUM)))) * _QUANTUM
 
 
-# Random valid histories (no wallet ever goes negative). With round_trips, a transfer often sends funds back to the wallet they last came
-# from (e.g. A -> B, then B -> A), to exercise the code that returns them to the lot they left from.
+# Random valid histories (no wallet ever goes negative). A transfer can have no fee, a fee paid with part of the units sent, or receive
+# nothing (the whole amount sent is the fee). With round_trips, a transfer often sends funds back to the wallet they last came from (e.g.
+# A -> B, then B -> A), to exercise the code that returns them to the lot they left from.
 @st.composite
 def _histories(draw: st.DrawFn, accounts: List[Account], round_trips: bool = False, min_steps: int = 1) -> List[_Step]:
     balances: Dict[Account, RP2Decimal] = {account: ZERO for account in accounts}
@@ -116,8 +117,12 @@ def _histories(draw: st.DrawFn, accounts: List[Account], round_trips: bool = Fal
             last_sender[to_account] = account
             sent = _amount(draw, balances[account])
             fee = ZERO
-            if draw(st.booleans()) and sent > _QUANTUM:
+            fee_kind = draw(st.sampled_from(["none", "part", "part", "all"]))
+            if fee_kind == "part" and sent > _QUANTUM:
                 fee = _amount(draw, sent - _QUANTUM)
+            elif fee_kind == "all":
+                # Nothing is received: the whole amount sent is the fee (R09).
+                fee = sent
             steps.append(_Step("intra", account, to_account, sent, fee, price, "Move"))
             balances[account] -= sent
             balances[to_account] += sent - fee
