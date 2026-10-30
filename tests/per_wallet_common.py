@@ -55,6 +55,7 @@ class _In(NamedTuple):
     spot_price: str
     crypto_in: str
     fiat_fee: Optional[str] = None
+    holder: str = "Bob"
 
 
 class _Out(NamedTuple):
@@ -66,6 +67,7 @@ class _Out(NamedTuple):
     crypto_fee: str = "0"
     # Optional input field: if None, it's crypto_out_no_fee + crypto_fee.
     crypto_out_with_fee: Optional[str] = None
+    holder: str = "Bob"
 
 
 class _Intra(NamedTuple):
@@ -76,6 +78,8 @@ class _Intra(NamedTuple):
     spot_price: str
     crypto_sent: str
     crypto_received: str
+    from_holder: str = "Bob"
+    to_holder: str = "Bob"
 
 
 # Expected gain/loss: acquired_lot_unique_id is the unique id of the original (input) lot, even when the gain/loss refers to an artificial
@@ -175,7 +179,7 @@ class AbstractPerWalletTest(unittest.TestCase):
                         transaction.timestamp,
                         asset,
                         transaction.exchange,
-                        "Bob",
+                        transaction.holder,
                         transaction.transaction_type,
                         RP2Decimal(transaction.spot_price),
                         RP2Decimal(transaction.crypto_in),
@@ -191,7 +195,7 @@ class AbstractPerWalletTest(unittest.TestCase):
                         transaction.timestamp,
                         asset,
                         transaction.exchange,
-                        "Bob",
+                        transaction.holder,
                         "Sell",
                         RP2Decimal(transaction.spot_price),
                         RP2Decimal(transaction.crypto_out_no_fee),
@@ -208,9 +212,9 @@ class AbstractPerWalletTest(unittest.TestCase):
                         transaction.timestamp,
                         asset,
                         transaction.from_exchange,
-                        "Bob",
+                        transaction.from_holder,
                         transaction.to_exchange,
-                        "Bob",
+                        transaction.to_holder,
                         RP2Decimal(transaction.spot_price),
                         RP2Decimal(transaction.crypto_sent),
                         RP2Decimal(transaction.crypto_received),
