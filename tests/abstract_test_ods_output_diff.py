@@ -33,6 +33,7 @@ GOLDEN_PATH: Path = INPUT_PATH / Path("golden")
 
 class OutputPlugins(Enum):
     OPEN_POSITIONS = "open_positions"
+    OPENING_ALLOCATION = "opening_allocation"
     RP2_FULL_REPORT = "rp2_full_report"
     TAX_REPORT_JP = "tax_report_jp"
     TAX_REPORT_US = "tax_report_us"
