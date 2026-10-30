@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Dict, Iterable, Iterator, List, NamedTuple, Optional, cast
 
 from rp2.abstract_accounting_method import AbstractAccountingMethod
@@ -206,13 +206,16 @@ class _TaxResult(NamedTuple):
 # 1) before the switch (the start of January 1st of the country's per-wallet start year, in the tax time zone: see
 #    Configuration.tax_timezone): universal application, exactly as compute_tax() does;
 # 2) at the switch: the lots that are still unused under universal application are allocated to the wallets that hold funds (Rev. Proc.
-#    2024-28 global allocation, see UnusedBasisAllocator);
+#    2024-28 global allocation, see UnusedBasisAllocator). This happens whenever there are funds at the switch, even if nothing happens
+#    after it: e.g. a coin bought in 2024 and never sold or moved is still allocated to the wallet holding it at the start of 2025;
 # 3) after the switch: TransferAnalyzer tracks lots per wallet and pairs every taxable event with lots of its own wallet.
 # Reports also get what each wallet holds at the end of the configuration's to_date (ComputedData.wallet_lots), so that they can show each
-# wallet's actual cost basis. If to_date is before the switch, the holdings at that date come from universal application, and reports
-# show them like compute_tax() does (wallet_lots is None).
-# The per-wallet settings (time zone and unused basis allocation rule) come from the country section of the configuration (e.g. [country.us]):
-# it's an error if the configuration doesn't have them.
+# wallet's actual cost basis.
+# If to_date is before the switch, the report only covers years of universal application: the result is the one of compute_tax() (the
+# holdings at to_date come from universal application and wallet_lots is None), and the per-wallet settings are not needed. Example: a US
+# report with to_date 2024-12-31 doesn't need them, even if the input has transactions in 2025.
+# Otherwise the per-wallet settings (time zone and unused basis allocation rule) come from the country section of the configuration (e.g.
+# [country.us]): it's an error if the configuration doesn't have them.
 # allocation_method is the unused basis allocation method of this asset (see PerWalletConfiguration.get_unused_basis_allocation_method()).
 # per_wallet_start_year is the first year of per-wallet application: it must be the start of a period of the country's application policy
 # that allows per-wallet application. If it's None, the first such period whose default mode is per-wallet is used.
@@ -229,6 +232,9 @@ def compute_tax_per_wallet(
     InputData.type_check("input_data", input_data)
 
     start_year = _get_per_wallet_start_year(configuration.country.get_application_policy(), configuration.country, per_wallet_start_year)
+    # to_date is a tax date (a date in the tax time zone), so it's before the switch exactly when it's before January 1st of start_year.
+    if configuration.to_date < date(start_year, 1, 1):
+        return compute_tax(configuration, accounting_engine, input_data)
     per_wallet_configuration = configuration.per_wallet_configuration
     # The tax time zone is the time zone of the per-wallet settings: it's None exactly when they are missing.
     tax_timezone = configuration.tax_timezone
@@ -254,34 +260,36 @@ def compute_tax_per_wallet(
         universal_input_data = _create_input_data(configuration, input_data.asset, universal_transactions)
         universal_result = _compute_universal_tax(configuration, accounting_engine, universal_input_data)
 
-    per_wallet_result = _TaxResult([], [])
-    if per_wallet_transactions:
-        # Phase 2: allocation of unused basis at the switch (nothing to allocate if there were no transactions before it).
-        allocated_lots: List[InTransaction] = []
-        if universal_input_data is not None:
-            unused_lots = _get_unused_lots(universal_input_data, universal_result.gain_loss_list)
-            account_2_balance = _get_account_balances(universal_transactions)
-            _check_balances_match_unused_lots(account_2_balance, unused_lots)
-            allocated_lots = UnusedBasisAllocator(
-                configuration,
-                switch_timestamp,
-                unused_lots,
-                account_2_balance,
-                allocation_method,
-                list(per_wallet_configuration.get_unused_basis_allocation_wallet_order(input_data.asset)),
-            ).allocate()
-        # Phase 3: per-wallet application after the switch.
+    # Phase 2: allocation of unused basis at the switch (nothing to allocate if there were no transactions before it). It doesn't depend on
+    # the transactions after the switch: they may not exist at all.
+    allocated_lots: List[InTransaction] = []
+    if universal_input_data is not None:
+        unused_lots = _get_unused_lots(universal_input_data, universal_result.gain_loss_list)
+        account_2_balance = _get_account_balances(universal_transactions)
+        _check_balances_match_unused_lots(account_2_balance, unused_lots)
+        allocated_lots = UnusedBasisAllocator(
+            configuration,
+            switch_timestamp,
+            unused_lots,
+            account_2_balance,
+            allocation_method,
+            list(per_wallet_configuration.get_unused_basis_allocation_wallet_order(input_data.asset)),
+        ).allocate()
+
+    # Phase 3: per-wallet application after the switch, starting from the allocated lots. If there are neither allocated lots nor transactions
+    # after the switch, the wallets hold nothing.
+    per_wallet_result = _TaxResult([], [], [])
+    if allocated_lots or per_wallet_transactions:
         LOGGER.info(
-            "%s: per-wallet application from %s (start of %d in %s, %d transactions)",
+            "%s: per-wallet application from %s (start of %d in %s): %d lot pieces allocated at the switch, %d transactions after it",
             input_data.asset,
             switch_timestamp.isoformat(),
             start_year,
             tax_timezone.key,
+            len(allocated_lots),
             len(per_wallet_transactions),
         )
         per_wallet_result = _compute_per_wallet_tax(configuration, accounting_engine, input_data.asset, start_year, per_wallet_transactions, allocated_lots)
-    # The wallet holdings at to_date are only meaningful if to_date is on or after the switch.
-    wallet_lots = per_wallet_result.wallet_lots if configuration.to_date >= switch_timestamp.date() else None
 
     taxable_event_set = TransactionSet(configuration, "MIXED", input_data.asset, MIN_DATE, MAX_DATE)
     for transaction in universal_result.taxable_events + per_wallet_result.taxable_events:
@@ -297,7 +305,7 @@ def compute_tax_per_wallet(
         input_data,
         configuration.from_date,
         configuration.to_date,
-        wallet_lots=wallet_lots,
+        wallet_lots=per_wallet_result.wallet_lots,
     )
 
 

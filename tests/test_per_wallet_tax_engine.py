@@ -48,7 +48,7 @@ from per_wallet_common import (
 from rp2.abstract_accounting_method import AbstractAccountingMethod
 from rp2.abstract_country import AbstractCountry
 from rp2.abstract_transaction import AbstractTransaction
-from rp2.configuration import Configuration
+from rp2.configuration import MAX_DATE, Configuration
 from rp2.gain_loss import GainLoss
 from rp2.in_transaction import InTransaction
 from rp2.per_wallet_configuration import PerWalletConfiguration
@@ -709,6 +709,89 @@ class TestPerWalletTaxEngine(AbstractPerWalletTest):
                     compute_tax_per_wallet(configuration, engine, input_data, per_wallet_start_year=year)
         computed_data = compute_tax_per_wallet(configuration, engine, input_data, per_wallet_start_year=2025)
         self.assertEqual(len(list(computed_data.gain_loss_set)), 0)
+
+    # R10 from the review of eprbell/rp2#155: the opening allocation doesn't depend on what happens after the switch, and a report that ends
+    # before the switch doesn't need the per-wallet settings.
+    #
+    # The rule in plain English: the coins held at the start of 2025 get the unused basis of their lots assigned to the wallets that hold them
+    # (Rev. Proc. 2024-28), whether or not they are sold or moved later. Example: buy 10 coins for $100 each on Coinbase in 2024 and never sell
+    # them. A report that reaches 2025 shows Coinbase holding 10 coins with $1,000 of cost basis and the 2024 purchase date. Before the fix
+    # the allocation only ran if the coin had transactions after the switch, so this report used universal application instead.
+    def test_opening_allocation_needs_no_later_transactions(self) -> None:
+        class _Case(NamedTuple):
+            description: str
+            transactions: List[object]
+            per_wallet_configuration: Optional[PerWalletConfiguration] = _UTC
+            allocation_method: Optional[AbstractAccountingMethod] = None
+            to_date: date = MAX_DATE
+            # What the wallets hold at the to date: (wallet, original lot, amount, cost basis, acquisition date). None: the report ends before
+            # the switch, so it uses universal application, which doesn't track wallets (see ComputedData.wallet_lots).
+            want_holdings: Optional[List[Tuple[str, str, str, str, str]]] = None
+            want_error: str = ""
+
+        buy_coinbase = _In("i1", "2024-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "10")
+        buy_kraken = _In("i2", "2024-01-03T00:00:00+00:00", "Kraken", "Buy", "200", "10")
+        cases = [
+            _Case(
+                description="one wallet: its coins are allocated to it automatically",
+                transactions=[buy_coinbase],
+                want_holdings=[("Coinbase", "i1", "10", "1000", "2024-01-02")],
+            ),
+            _Case(
+                description="a report that ends on the day of the switch",
+                transactions=[buy_coinbase],
+                to_date=date(2025, 1, 1),
+                want_holdings=[("Coinbase", "i1", "10", "1000", "2024-01-02")],
+            ),
+            _Case(
+                # Universal FIFO pairs the 2024 sale with i1: 6 of its 10 coins are unused at the switch, with $600 of basis.
+                description="a lot partly sold before the switch: only its unused part is allocated",
+                transactions=[buy_coinbase, _Out("o1", "2024-06-01T00:00:00+00:00", "Coinbase", "150", "4")],
+                want_holdings=[("Coinbase", "i1", "6", "600", "2024-01-02")],
+            ),
+            _Case(
+                description="two wallets: the configured rule decides (FIFO lots, Kraken filled first, so Kraken gets the oldest lot)",
+                transactions=[buy_coinbase, buy_kraken],
+                per_wallet_configuration=_allocation_config((_KRAKEN, _COINBASE)),
+                allocation_method=AccountingMethodFIFO(),
+                want_holdings=[("Coinbase", "i2", "10", "2000", "2024-01-03"), ("Kraken", "i1", "10", "1000", "2024-01-02")],
+            ),
+            _Case(
+                description="two wallets without an allocation rule: an error, even without later transactions",
+                transactions=[buy_coinbase, buy_kraken],
+                want_error="Unused basis allocation is needed",
+            ),
+            _Case(
+                # Two funded wallets and no per-wallet settings at all: they would be needed for 2025, but the report ends in 2024.
+                description="a report that ends before the switch: universal application, without the per-wallet settings",
+                transactions=[buy_coinbase, buy_kraken, _Out("o1", "2025-02-01T00:00:00+00:00", "Kraken", "300", "5")],
+                per_wallet_configuration=None,
+                to_date=date(2024, 12, 31),
+            ),
+        ]
+        for case in cases:
+            with self.subTest(name=case.description):
+                configuration = _create_configuration(case.per_wallet_configuration, to_date=case.to_date)
+                input_data = self._create_input_data(configuration, case.transactions)
+                if case.want_error:
+                    with self.assertRaisesRegex(RP2ValueError, case.want_error):
+                        compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data, case.allocation_method)
+                    continue
+                computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data, case.allocation_method)
+                # Nothing after the switch is reported, so the reported gain/losses are those of universal application.
+                got = self._to_tuples([gain_loss for gain_loss in computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)])
+                universal_computed_data = compute_tax(configuration, self._create_accounting_engine(None), input_data)
+                universal = self._to_tuples([gain_loss for gain_loss in universal_computed_data.gain_loss_set if isinstance(gain_loss, GainLoss)])
+                self.assertEqual(_sorted(got), _sorted(universal))
+                wallet_lots = computed_data.wallet_lots
+                if case.want_holdings is None:
+                    self.assertIsNone(wallet_lots)
+                    continue
+                assert wallet_lots is not None
+                want_holdings: List[_Holding] = [
+                    (wallet, lot, RP2Decimal(amount), RP2Decimal(basis), day) for wallet, lot, amount, basis, day in case.want_holdings
+                ]
+                self.assertEqual(_holdings(wallet_lots), want_holdings)
 
     def test_artificial_in_transaction_is_not_income(self) -> None:
         configuration = Configuration(_CONFIGURATION_PATH, US())

@@ -83,14 +83,18 @@ Config file (INI, with [country.us] section) + Input ODS spreadsheet
 ods_parser.py → InputData (universal: all transactions by asset)
   ↓
 tax_engine.compute_tax_per_wallet():
-  - rp2_main resolves each asset's mode per year from country.get_application_policy() (ApplicationPolicy) and the optional
-    application_mode choice; per-wallet years need the [country.us] per-wallet fields (else RP2ValueError, no silent fallback)
+  - rp2_main resolves each asset's mode per year of the report from country.get_application_policy() (ApplicationPolicy) and the
+    optional application_mode choice; per-wallet years need the [country.us] per-wallet fields (else RP2ValueError, no silent fallback).
+    Report years: the asset's transaction years up to the report end (-t, else the last transaction date of the processed assets; never
+    today's date), plus the report end's year if the asset still holds units then (R10: a 2024 coin held in a 2025 report is allocated)
   - switch instant = Jan 1 of the first per-wallet policy period, in [country.us] timezone (the tax time zone: every date and year is
     computed in it, see "Tax Dates and Time Zones" below, so a transaction's phase always agrees with its tax year)
+  - to_date before the switch: compute_tax() (the report only covers universal years; per-wallet settings not needed)
   - before the switch: universal application, identical to compute_tax()
   - at the switch: UnusedBasisAllocator assigns the lots still unused under universal application to the
     wallets holding funds (Rev. Proc. 2024-28 global allocation; explicit config if > 1 funded wallet),
-    as artificial InTransactions (from_lot = original lot, same per-unit basis and acquisition date)
+    as artificial InTransactions (from_lot = original lot, same per-unit basis and acquisition date).
+    It runs whenever there are funds at the switch, even with no transactions after it
   - after the switch: TransferAnalyzer(...).analyze_and_pair() processes transactions chronologically
     (same timestamp: In, Intra, Out, then row), per wallet, with the accounting method of each year:
       InTransaction → lot added to its wallet (earn types → income GainLoss)
@@ -98,8 +102,8 @@ tax_engine.compute_tax_per_wallet():
       IntraTransaction → fee paid first (always a disposal GainLoss: IRS FAQ A81/A97), received units
         become artificial InTransactions in the destination
         (cycles A→B→A return units to the lot they left A from, e.g. the lot allocated to A at the switch)
-  - TransferAnalyzer also records what each wallet holds at the end of the report's to_date (WalletLot list, only if to_date is on or
-    after the switch): ComputedData.wallet_lots, used by the open positions report for each wallet's actual cost basis
+  - TransferAnalyzer also records what each wallet holds at the end of the report's to_date (WalletLot list; to_date is on or after
+    the switch here): ComputedData.wallet_lots, used by the open positions report for each wallet's actual cost basis
   ↓
 ComputedData (asset → GainLossSet: universal pre-switch + per-wallet post-switch; wallet_lots)
   ↓
@@ -160,11 +164,11 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 
 #### Per-Wallet and Global Allocation Tests (new)
 
-- `tests/test_per_wallet_tax_engine.py` — end-to-end, hand-computed examples for `compute_tax_per_wallet` (edge cases: fees, zero-receipt transfers, #149, holding period, allocation, timezone boundary, same-timestamp order, cycles, method change, dust).
+- `tests/test_per_wallet_tax_engine.py` — end-to-end, hand-computed examples for `compute_tax_per_wallet` (edge cases: fees, zero-receipt transfers, #149, holding period, allocation (also without later transactions, and reports ending before the switch), timezone boundary, same-timestamp order, cycles, method change, dust).
 - `tests/test_per_wallet_reports.py` — per-wallet report output, checked in actual ODS cells (transfer fees, zero-receipt transfers, remaining basis, artificial lots).
 - `tests/per_wallet_common.py` — shared helpers of the two files above: short-form transactions (`_In`, `_Out`, `_Intra`), expected gain/losses, wallets, `AbstractPerWalletTest` and `_create_configuration()` (a test configuration file with the `[country.us]` section of the given per-wallet settings: `compute_tax_per_wallet()` reads them from the configuration).
 - `tests/test_per_wallet_properties.py` — hypothesis property tests (random histories include zero-receipt transfers): wallet lots = wallet balance after each step, basis/lot conservation, single wallet per-wallet == universal, JP universal results unaffected.
-- `tests/test_ods_output_diff_per_wallet.py` — CLI: country section doesn't change pre-2025 output (the datasets' timestamps fall on the same dates in New York); 2025 data needs `[country.us]`; conflicting `application_mode` and other countries' sections are rejected; `-w` no longer exists.
+- `tests/test_ods_output_diff_per_wallet.py` — CLI: country section doesn't change pre-2025 output (the datasets' timestamps fall on the same dates in New York); a report that reaches 2025 with transactions or holdings in it needs `[country.us]`, one that ends before 2025 (`-t`) doesn't; conflicting `application_mode` and other countries' sections are rejected; `-w` no longer exists.
 - `tests/test_application_policy.py` — `ApplicationPolicy`: per-year modes, explicit choices, switch year, policy validation.
 - `tests/test_tax_dates.py` — tax dates in the configured time zone (R06): method year, switch, holding period (winter/summer), ordering across a DST change, report filters and dates, computer time zone, other countries unchanged.
 

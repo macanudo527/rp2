@@ -21,14 +21,16 @@ from importlib import import_module
 from pathlib import Path
 from pkgutil import iter_modules
 from types import ModuleType
-from typing import Dict, List, Optional, Set
+from typing import Dict, Iterator, List, Optional, Set
 
 from prezzemolo.avl_tree import AVLTree
 
 from rp2.abstract_accounting_method import AbstractAccountingMethod
 from rp2.abstract_country import AbstractCountry
 from rp2.abstract_report_generator import AbstractReportGenerator
+from rp2.abstract_transaction import AbstractTransaction
 from rp2.accounting_engine import AccountingEngine
+from rp2.balance import CRYPTO_BALANCE_DECIMAL_MASK, BalanceSet
 from rp2.computed_data import ComputedData
 from rp2.configuration import (
     MAX_DATE,
@@ -40,6 +42,7 @@ from rp2.input_data import InputData
 from rp2.localization import set_generation_language
 from rp2.logger import LOG_FILE, LOGGER
 from rp2.ods_parser import open_ods, parse_ods
+from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2RuntimeError, RP2ValueError
 from rp2.tax_engine import compute_tax, compute_tax_per_wallet
 
@@ -140,12 +143,14 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
         input_file_handle: object = open_ods(configuration=configuration, input_file_path=args.input_file)
         # The application mode of every asset is resolved (and the configuration checked against it) before any computation starts.
         asset_2_input_data: Dict[str, InputData] = {}
-        asset_2_per_wallet_start_year: Dict[str, Optional[int]] = {}
         for asset in assets:
             input_data: InputData = parse_ods(configuration=configuration, asset=asset, input_file_handle=input_file_handle)
             LOGGER.debug("InputData object: %s", input_data)
             asset_2_input_data[asset] = input_data
-            asset_2_per_wallet_start_year[asset] = _get_per_wallet_start_year(configuration, country, input_data)
+        report_end_date = _get_report_end_date(configuration, asset_2_input_data)
+        asset_2_per_wallet_start_year: Dict[str, Optional[int]] = {}
+        for asset in assets:
+            asset_2_per_wallet_start_year[asset] = _get_per_wallet_start_year(configuration, country, asset_2_input_data[asset], report_end_date)
 
         for asset in assets:
             LOGGER.info("Processing %s", asset)
@@ -204,13 +209,13 @@ def _load_allocation_methods(configuration: Configuration, country: AbstractCoun
 
 
 # First year of per-wallet application of an asset, or None if all its years use universal application. The application mode of each year
-# with transactions comes from the country's policy and the user's choice (application_mode in the country section, if any): a choice
-# that a year doesn't allow is an error. Per-wallet application needs the per-wallet settings of the country section (at least the
-# timezone): if they are missing it's an error, never a silent fallback to universal application.
-def _get_per_wallet_start_year(configuration: Configuration, country: AbstractCountry, input_data: InputData) -> Optional[int]:
+# of the report (see _get_report_years()) comes from the country's policy and the user's choice (application_mode in the country section, if
+# any): a choice that a year doesn't allow is an error. Per-wallet application needs the per-wallet settings of the country section (at
+# least the timezone): if they are missing it's an error, never a silent fallback to universal application.
+def _get_per_wallet_start_year(configuration: Configuration, country: AbstractCountry, input_data: InputData, report_end_date: date) -> Optional[int]:
     policy = country.get_application_policy()
     try:
-        year_2_mode = policy.get_year_2_mode(_get_transaction_years(input_data), configuration.application_mode)
+        year_2_mode = policy.get_year_2_mode(_get_report_years(configuration, input_data, report_end_date), configuration.application_mode)
         result = policy.get_per_wallet_start_year(year_2_mode)
     except RP2ValueError as exc:
         raise RP2ValueError(f"{input_data.asset}: {exc}") from exc
@@ -218,9 +223,9 @@ def _get_per_wallet_start_year(configuration: Configuration, country: AbstractCo
         return None
     if configuration.per_wallet_configuration is None:
         raise RP2ValueError(
-            f"{input_data.asset} has transactions in {result} or later, when {country.country_iso_code.upper()} requires per-wallet application: "
-            f"add a 'country.{country.country_iso_code}' section with at least the 'timezone' field to the configuration file "
-            "(see docs/input_files.md)"
+            f"{input_data.asset} has transactions or holdings in {result} or later (the report ends on {report_end_date}), when "
+            f"{country.country_iso_code.upper()} requires per-wallet application: add a 'country.{country.country_iso_code}' section with at least "
+            f"the 'timezone' field to the configuration file (see docs/input_files.md), or end the report before {result} with -t"
         )
     LOGGER.info(
         "%s: universal application before %d, per-wallet application from %d (timezone %s)",
@@ -246,17 +251,35 @@ def _load_accounting_method(accounting_method_name: str) -> AbstractAccountingMe
     return result
 
 
-# Tax years in which the input has transactions (see Configuration.tax_timezone).
-def _get_transaction_years(input_data: InputData) -> Set[int]:
-    return {
-        transaction.tax_year
-        for transaction_set in (
-            input_data.unfiltered_in_transaction_set,
-            input_data.unfiltered_out_transaction_set,
-            input_data.unfiltered_intra_transaction_set,
-        )
-        for transaction in transaction_set
-    }
+# Last day of the report: the -t date, if given, otherwise the tax date (see Configuration.tax_timezone) of the last transaction in the input
+# (of all the assets being processed). It decides which years the report reaches, and so their application mode. It never depends on the
+# current date: e.g. without -t, an input that ends in 2024 gives a report that ends in 2024, whenever RP2 runs.
+def _get_report_end_date(configuration: Configuration, asset_2_input_data: Dict[str, InputData]) -> date:
+    if configuration.to_date < MAX_DATE:
+        return configuration.to_date
+    return max((transaction.tax_date for input_data in asset_2_input_data.values() for transaction in _get_transactions(input_data)), default=MIN_DATE)
+
+
+# Tax years of the report in which the asset needs an application mode: the years of its transactions up to the end of the report and, if
+# it still holds units at the end of the report, the year of the end of the report. Example (US): a coin bought in 2024 and never sold or
+# moved, in a report that ends in 2025, needs per-wallet application from 2025, so that its unsold units are allocated to the wallets that
+# hold them at the switch (Rev. Proc. 2024-28), even if it has no transactions in 2025. Its transactions after the end of the report don't
+# matter: a report that ends in 2024 uses universal application only, and doesn't need the per-wallet settings.
+def _get_report_years(configuration: Configuration, input_data: InputData, report_end_date: date) -> Set[int]:
+    result = {transaction.tax_year for transaction in _get_transactions(input_data) if transaction.tax_date <= report_end_date}
+    # The balance is only needed if the asset has no transactions in the last year of the report (and some before it).
+    if result and report_end_date.year not in result:
+        balance = RP2Decimal(sum((balance.final_balance for balance in BalanceSet(configuration, input_data, report_end_date)), ZERO))
+        if balance > ZERO and not RP2Decimal.is_equal_within_precision(balance, ZERO, CRYPTO_BALANCE_DECIMAL_MASK):
+            result.add(report_end_date.year)
+    return result
+
+
+def _get_transactions(input_data: InputData) -> Iterator[AbstractTransaction]:
+    for transaction_set in (input_data.unfiltered_in_transaction_set, input_data.unfiltered_out_transaction_set, input_data.unfiltered_intra_transaction_set):
+        for transaction in transaction_set:
+            if isinstance(transaction, AbstractTransaction):
+                yield transaction
 
 
 def _find_and_run_report_generators(

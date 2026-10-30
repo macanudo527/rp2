@@ -61,6 +61,7 @@ class TestODSOutputDiffPerWallet(AbstractTestODSOutputDiff):
     universal_output_dir: Path
     config_dir: Path
     input_2025_path: Path
+    input_sold_path: Path
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -98,6 +99,14 @@ class TestODSOutputDiffPerWallet(AbstractTestODSOutputDiff):
             raise ValueError(f"Unexpected test_data4.ods content: {sheet[7, 0].value}")
         sheet[7, 0].set_value("2025-02-01T08:41Z")
         document.saveas(str(cls.input_2025_path))
+        # test_data4 with the whole B4 unit disposed of in 2020 (instead of half of it): B4 then holds nothing after 2020.
+        cls.input_sold_path = cls.output_dir / Path("test_data4_sold.ods")
+        document = ezodf.opendoc(str(INPUT_PATH / Path("test_data4.ods")))
+        sheet = document.sheets["B4"]
+        if sheet[7, 7].value != 0.5:
+            raise ValueError(f"Unexpected test_data4.ods content: {sheet[7, 7].value}")
+        sheet[7, 7].set_value(1.0)
+        document.saveas(str(cls.input_sold_path))
 
     def _run(self, country: str, config_suffix: str, input_path: Path, extra_arguments: Optional[List[str]] = None) -> "CompletedProcess[str]":
         config_path = self.config_dir / Path(f"test_data4_{country}_{abs(hash(config_suffix))}.ini")
@@ -130,7 +139,12 @@ class TestODSOutputDiffPerWallet(AbstractTestODSOutputDiff):
         # Without the country section: an error, never a silent fallback to universal application.
         result = self._run("us", "", self.input_2025_path)
         self.assertNotEqual(result.returncode, 0)
-        message = "B4 has transactions in 2025 or later, when US requires per-wallet application: add a 'country.us' section with at least the 'timezone'"
+        # Without -t the report ends on the date of the last transaction.
+        message = (
+            "B4 has transactions or holdings in 2025 or later (the report ends on 2025-02-01), when US requires per-wallet application: add a "
+            "'country.us' section with at least the 'timezone' field to the configuration file (see docs/input_files.md), or end the report "
+            "before 2025 with -t"
+        )
         self.assertIn(message, result.stdout + result.stderr)
         # A country section without the per-wallet settings is also missing the required data.
         result = self._run("us", "\n[country.us]\n", self.input_2025_path)
@@ -141,6 +155,30 @@ class TestODSOutputDiffPerWallet(AbstractTestODSOutputDiff):
         result = self._run("us", _COUNTRY_US_SECTION, self.input_2025_path)
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertIn("B4: universal application before 2025, per-wallet application from 2025 (timezone America/New_York)", result.stdout + result.stderr)
+
+    # R10: the period of the report decides whether it needs per-wallet application, not the transactions after it. The report ends on the -t
+    # date or, without -t, on the date of the last transaction: never on today's date.
+    def test_report_period_decides_the_application_mode(self) -> None:
+        # test_data4.ods ends in 2020, when B4 still holds 0.5 units: a report that reaches 2025 needs their opening allocation, even though
+        # B4 has no transactions after 2020.
+        result = self._run("us", "", INPUT_PATH / Path("test_data4.ods"), ["-t", "2025-12-31"])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("B4 has transactions or holdings in 2025 or later (the report ends on 2025-12-31)", result.stdout + result.stderr)
+        result = self._run("us", _COUNTRY_US_SECTION, INPUT_PATH / Path("test_data4.ods"), ["-t", "2025-12-31"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertIn(
+            "B4: per-wallet application from 2025-01-01T00:00:00-05:00 (start of 2025 in America/New_York): 1 lot pieces allocated at the "
+            "switch, 0 transactions after it",
+            result.stdout + result.stderr,
+        )
+        # If B4 holds nothing at the end of the report and has no transactions in 2025, there's nothing to allocate: universal application.
+        result = self._run("us", "", self.input_sold_path, ["-t", "2025-12-31"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertNotIn("per-wallet application from", result.stdout + result.stderr)
+        # A report that ends before 2025 doesn't need the per-wallet settings, even if the input has transactions in 2025.
+        result = self._run("us", "", self.input_2025_path, ["-t", "2024-12-31"])
+        self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
+        self.assertNotIn("per-wallet application from", result.stdout + result.stderr)
 
     def test_conflicting_application_mode_is_rejected(self) -> None:
         # Each US period allows one mode: an explicit choice that a year with transactions doesn't allow is an error.
