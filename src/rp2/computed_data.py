@@ -27,6 +27,7 @@ from rp2.in_transaction import InTransaction
 from rp2.input_data import InputData
 from rp2.intra_transaction import IntraTransaction
 from rp2.logger import LOGGER
+from rp2.opening_allocation import OpeningAllocation
 from rp2.out_transaction import OutTransaction
 from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2TypeError, RP2ValueError
@@ -199,6 +200,7 @@ class ComputedData:
         from_date: date = MIN_DATE,
         to_date: date = MAX_DATE,
         wallet_lots: Optional[List[WalletLot]] = None,
+        opening_allocation: Optional[OpeningAllocation] = None,
     ) -> None:
         # pylint: disable=too-many-branches
         InputData.type_check("input_data", input_data)
@@ -292,6 +294,11 @@ class ComputedData:
             raise RP2ValueError(f"Asset mismatch in 'input_data': expected {self.__asset}, found {input_data.asset}")
 
         self.__wallet_lots: Optional[List[WalletLot]] = self._check_wallet_lots(wallet_lots) if wallet_lots is not None else None
+        self.__opening_allocation: Optional[OpeningAllocation] = None
+        if opening_allocation is not None:
+            self.__opening_allocation = OpeningAllocation.type_check("opening_allocation", opening_allocation)
+            if opening_allocation.asset != self.__asset:
+                raise RP2ValueError(f"Asset mismatch in 'opening_allocation': expected {self.__asset}, found {opening_allocation.asset}")
 
     # The wallet lots are what the wallets hold at to_date: for every wallet, their units should add up to its balance at to_date (shown in
     # the Account Balances of the full report). They differ only if the input is inconsistent: the tax computation, and so the lots, use the
@@ -375,6 +382,11 @@ class ComputedData:
     def wallet_lots(self) -> Optional[List[WalletLot]]:
         """What each wallet holds at to_date, lot by lot, in per-wallet application (None if to_date is in universal application)."""
         return list(self.__wallet_lots) if self.__wallet_lots is not None else None
+
+    @property
+    def opening_allocation(self) -> Optional[OpeningAllocation]:
+        """The allocation of unused basis at the switch to per-wallet application (None in universal application or if no wallet held units)."""
+        return self.__opening_allocation
 
     def get_crypto_in_running_sum(self, in_transaction: InTransaction) -> RP2Decimal:
         """Crypto in running sum for a given InTransaction instance."""

@@ -13,7 +13,7 @@
 # limitations under the License.
 
 from datetime import date, datetime
-from typing import Dict, Iterable, Iterator, List, NamedTuple, Optional, cast
+from typing import Container, Dict, Iterable, Iterator, List, NamedTuple, Optional, cast
 
 from rp2.abstract_accounting_method import AbstractAccountingMethod
 from rp2.abstract_country import AbstractCountry
@@ -28,19 +28,20 @@ from rp2.accounting_engine import (
 from rp2.application_policy import ApplicationMode, ApplicationPolicy
 from rp2.balance import CRYPTO_BALANCE_DECIMAL_MASK
 from rp2.computed_data import ComputedData
-from rp2.configuration import MAX_DATE, MIN_DATE, Configuration
+from rp2.configuration import MAX_DATE, MIN_DATE, Configuration, Keyword
 from rp2.gain_loss import GainLoss
 from rp2.gain_loss_set import GainLossSet
 from rp2.in_transaction import InTransaction
 from rp2.input_data import InputData
 from rp2.intra_transaction import IntraTransaction
 from rp2.logger import LOGGER
+from rp2.opening_allocation import OpeningAllocation, UnusedLot
 from rp2.out_transaction import OutTransaction
 from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2RuntimeError, RP2ValueError
 from rp2.transaction_set import TransactionSet
 from rp2.transfer_analyzer import TransferAnalyzer
-from rp2.unused_basis_allocator import UnusedBasisAllocator, UnusedLot
+from rp2.unused_basis_allocator import UnusedBasisAllocator
 from rp2.wallet_lot import WalletLot
 
 
@@ -210,7 +211,8 @@ class _TaxResult(NamedTuple):
 #    after it: e.g. a coin bought in 2024 and never sold or moved is still allocated to the wallet holding it at the start of 2025;
 # 3) after the switch: TransferAnalyzer tracks lots per wallet and pairs every taxable event with lots of its own wallet.
 # Reports also get what each wallet holds at the end of the configuration's to_date (ComputedData.wallet_lots), so that they can show each
-# wallet's actual cost basis.
+# wallet's actual cost basis, and the record of the allocation at the switch (ComputedData.opening_allocation), for the opening allocation
+# report.
 # If to_date is before the switch, the report only covers years of universal application: the result is the one of compute_tax() (the
 # holdings at to_date come from universal application and wallet_lots is None), and the per-wallet settings are not needed. Example: a US
 # report with to_date 2024-12-31 doesn't need them, even if the input has transactions in 2025.
@@ -262,19 +264,33 @@ def compute_tax_per_wallet(
 
     # Phase 2: allocation of unused basis at the switch (nothing to allocate if there were no transactions before it). It doesn't depend on
     # the transactions after the switch: they may not exist at all.
-    allocated_lots: List[InTransaction] = []
+    opening_allocation: Optional[OpeningAllocation] = None
     if universal_input_data is not None:
         unused_lots = _get_unused_lots(universal_input_data, universal_result.gain_loss_list)
         account_2_balance = _get_account_balances(universal_transactions)
         _check_balances_match_unused_lots(account_2_balance, unused_lots)
-        allocated_lots = UnusedBasisAllocator(
+        opening_allocation = UnusedBasisAllocator(
             configuration,
+            input_data.asset,
             switch_timestamp,
             unused_lots,
             account_2_balance,
             allocation_method,
             list(per_wallet_configuration.get_unused_basis_allocation_wallet_order(input_data.asset)),
+            allocation_method_field=_get_allocation_field(
+                Keyword.UNUSED_BASIS_ALLOCATION_METHOD,
+                input_data.asset,
+                per_wallet_configuration.asset_2_unused_basis_allocation_method,
+                bool(per_wallet_configuration.unused_basis_allocation_method),
+            ),
+            wallet_order_field=_get_allocation_field(
+                Keyword.UNUSED_BASIS_ALLOCATION_WALLET_ORDER,
+                input_data.asset,
+                per_wallet_configuration.asset_2_unused_basis_allocation_wallet_order,
+                bool(per_wallet_configuration.unused_basis_allocation_wallet_order),
+            ),
         ).allocate()
+    allocated_lots: List[InTransaction] = opening_allocation.allocated_lots if opening_allocation is not None else []
 
     # Phase 3: per-wallet application after the switch, starting from the allocated lots. If there are neither allocated lots nor transactions
     # after the switch, the wallets hold nothing.
@@ -306,7 +322,16 @@ def compute_tax_per_wallet(
         configuration.from_date,
         configuration.to_date,
         wallet_lots=per_wallet_result.wallet_lots,
+        opening_allocation=opening_allocation,
     )
+
+
+# Name of the configuration field that the allocation method (or wallet order) of the asset comes from: the asset's override (e.g.
+# unused_basis_allocation_method.BTC), if any, otherwise the default field, if set. None if neither is set.
+def _get_allocation_field(field: Keyword, asset: str, overridden_assets: Container[str], has_default: bool) -> Optional[str]:
+    if asset in overridden_assets:
+        return f"{field.value}.{asset}"
+    return field.value if has_default else None
 
 
 # Checks (or, if None, finds) the first year of per-wallet application against the country's application policy.

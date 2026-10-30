@@ -19,7 +19,7 @@ import shutil
 import unittest
 from datetime import date
 from pathlib import Path
-from typing import List, NamedTuple, Optional, Tuple
+from typing import Dict, List, NamedTuple, Optional, Tuple
 
 from ods_diff import read_sheet_rows
 from per_wallet_common import (
@@ -40,17 +40,23 @@ from per_wallet_common import (
     _sorted,
 )
 
+from rp2.abstract_accounting_method import AbstractAccountingMethod
+from rp2.computed_data import ComputedData
 from rp2.configuration import MAX_DATE, MIN_DATE
 from rp2.gain_loss import GainLoss
 from rp2.in_transaction import InTransaction
 from rp2.localization import set_generation_language
 from rp2.per_wallet_configuration import PerWalletConfiguration
 from rp2.plugin.accounting_method.fifo import AccountingMethod as AccountingMethodFIFO
+from rp2.plugin.accounting_method.hifo import AccountingMethod as AccountingMethodHIFO
+from rp2.plugin.accounting_method.lifo import AccountingMethod as AccountingMethodLIFO
+from rp2.plugin.accounting_method.lofo import AccountingMethod as AccountingMethodLOFO
 from rp2.plugin.country.us import US
 from rp2.plugin.report.open_positions import Generator as OpenPositionsGenerator
+from rp2.plugin.report.opening_allocation import Generator as OpeningAllocationGenerator
 from rp2.plugin.report.rp2_full_report import Generator as FullReportGenerator
 from rp2.plugin.report.us.tax_report_us import Generator as TaxReportUSGenerator
-from rp2.rp2_decimal import RP2Decimal
+from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.tax_engine import compute_tax, compute_tax_per_wallet
 
 
@@ -475,6 +481,167 @@ class TestPerWalletReports(AbstractPerWalletTest):
         got_by_exchange: List[List[str]] = [row[1:4] + row[5:6] for row in exchange_rows if row[:1] == [_ASSET]]
         want_by_exchange: List[List[str]] = [["Bob", "Coinbase", "0.99899999", "99.899999"]]
         self.assertEqual(got_by_exchange, want_by_exchange)
+
+    # R10 from the review of eprbell/rp2#155: the opening allocation report records how the unused basis was assigned to the wallets at the
+    # switch (Rev. Proc. 2024-28 global allocation), as it was then: transactions after the switch don't change it.
+    #
+    # The rule in plain English: at the start of 2025 the lots that universal application hasn't sold yet (the unused basis) are sorted with
+    # the allocation method and assigned to the wallets in the configured order, each wallet up to the coins it holds then, so a lot can be
+    # split between two wallets. Each piece keeps the cost and the purchase date of its lot.
+    #
+    # Example (B1 below): in 2024 buy 4 coins on Coinbase for $100 each (i1), 4 on Kraken for $300 each (i2) and 4 on Coinbase for $200 each
+    # (i3), move 2 coins from Coinbase to Kraken and sell 1 coin on Kraken. Universal FIFO sells 1 coin of i1, so the unused lots are i1 (3
+    # coins), i2 (4) and i3 (4), and at the switch Kraken holds 5 coins and Coinbase 6. The wallet order is Kraken, BlockFi, Coinbase: BlockFi
+    # holds nothing, so it gets nothing. FIFO sorts the lots by date (i1, i2, i3): Kraken gets the 3 coins of i1 and 2 of i2, Coinbase the other
+    # 2 of i2 and the 4 of i3. LIFO, HIFO and LOFO sort them differently and split another lot.
+    # B2 has its own rule (LIFO, Coinbase first) and B3 is held by one wallet only, so its allocation is automatic. Each method is checked
+    # with and without transactions after the switch: the report must be the same.
+    def test_opening_allocation_report(self) -> None:  # pylint: disable=too-many-locals
+        # Lots: unique id -> (input row, acquisition date, exchange, price, coins bought, coins unused at the switch).
+        lots: Dict[str, Tuple[str, str, str, str, str, str]] = {
+            "i1": ("1", "2024-01-02", "Coinbase", "100", "4", "3"),
+            "i2": ("2", "2024-02-01", "Kraken", "300", "4", "4"),
+            "i3": ("3", "2024-03-01", "Coinbase", "200", "4", "4"),
+            "j1": ("1", "2024-01-05", "Coinbase", "50", "2", "2"),
+            "j2": ("2", "2024-02-05", "Kraken", "60", "2", "2"),
+            "k1": ("1", "2024-04-01", "Coinbase", "1000", "1", "1"),
+        }
+        transactions: Dict[str, List[object]] = {
+            "B1": [
+                _In("i1", "2024-01-02T00:00:00+00:00", "Coinbase", "Buy", "100", "4"),
+                _In("i2", "2024-02-01T00:00:00+00:00", "Kraken", "Buy", "300", "4"),
+                _In("i3", "2024-03-01T00:00:00+00:00", "Coinbase", "Buy", "200", "4"),
+                _Intra("t1", "2024-04-01T00:00:00+00:00", "Coinbase", "Kraken", "250", "2", "2"),
+                _Out("o1", "2024-05-01T00:00:00+00:00", "Kraken", "250", "1"),
+            ],
+            "B2": [
+                _In("j1", "2024-01-05T00:00:00+00:00", "Coinbase", "Buy", "50", "2"),
+                _In("j2", "2024-02-05T00:00:00+00:00", "Kraken", "Buy", "60", "2"),
+            ],
+            "B3": [_In("k1", "2024-04-01T00:00:00+00:00", "Coinbase", "Buy", "1000", "1")],
+        }
+        later_transactions: Dict[str, List[object]] = {
+            "B1": [
+                _Out("o2", "2025-02-01T00:00:00+00:00", "Kraken", "500", "5"),
+                _Intra("t2", "2025-03-01T00:00:00+00:00", "Coinbase", "Kraken", "500", "1", "1"),
+            ],
+            "B2": [_Out("p1", "2025-02-01T00:00:00+00:00", "Coinbase", "70", "2")],
+            "B3": [],
+        }
+        # For each method: the unused lots of B1 in the order of the method, and the pieces allocated to each wallet (wallet, lot, coins).
+        # B2 always uses its own rule: LIFO puts j2 first, and Coinbase is filled first.
+        method_2_allocation: Dict[str, Tuple[List[str], List[Tuple[str, str, str]]]] = {
+            "fifo": (["i1", "i2", "i3"], [("Kraken", "i1", "3"), ("Kraken", "i2", "2"), ("Coinbase", "i2", "2"), ("Coinbase", "i3", "4")]),
+            "lifo": (["i3", "i2", "i1"], [("Kraken", "i3", "4"), ("Kraken", "i2", "1"), ("Coinbase", "i2", "3"), ("Coinbase", "i1", "3")]),
+            "hifo": (["i2", "i3", "i1"], [("Kraken", "i2", "4"), ("Kraken", "i3", "1"), ("Coinbase", "i3", "3"), ("Coinbase", "i1", "3")]),
+            "lofo": (["i1", "i3", "i2"], [("Kraken", "i1", "3"), ("Kraken", "i3", "2"), ("Coinbase", "i3", "2"), ("Coinbase", "i2", "4")]),
+        }
+        b2_lots_and_pieces: Tuple[List[str], List[Tuple[str, str, str]]] = (["j2", "j1"], [("Coinbase", "j2", "2"), ("Kraken", "j1", "2")])
+        b3_lots_and_pieces: Tuple[List[str], List[Tuple[str, str, str]]] = (["k1"], [("Coinbase", "k1", "1")])
+        methods: Dict[str, AbstractAccountingMethod] = {
+            "fifo": AccountingMethodFIFO(),
+            "lifo": AccountingMethodLIFO(),
+            "hifo": AccountingMethodHIFO(),
+            "lofo": AccountingMethodLOFO(),
+        }
+
+        def number(value: RP2Decimal) -> str:
+            return str(float(value))
+
+        # The expected rows of an asset in the Wallets, Unused Lots and Allocation sheets.
+        def want_asset_rows(
+            asset: str, wallet_order: List[str], allocation: Tuple[List[str], List[Tuple[str, str, str]]]
+        ) -> Tuple[List[List[str]], List[List[str]], List[List[str]]]:
+            lot_order, pieces = allocation
+            unused_rows: List[List[str]] = []
+            for order, lot in enumerate(lot_order, start=1):
+                row, day, exchange, price, bought, unused = lots[lot]
+                unused_basis = RP2Decimal(price) * RP2Decimal(unused)
+                unused_rows.append([asset, number(RP2Decimal(order)), lot, number(RP2Decimal(row)), day, exchange, "Bob", "BUY"])
+                unused_rows[-1] += [number(RP2Decimal(price)), number(RP2Decimal(bought)), number(RP2Decimal(unused)), number(RP2Decimal(price))]
+                unused_rows[-1].append(number(unused_basis))
+            total_crypto = RP2Decimal(sum((RP2Decimal(coins) for _, _, coins in pieces), ZERO))
+            total_basis = RP2Decimal(sum((RP2Decimal(lots[lot][3]) * RP2Decimal(coins) for _, lot, coins in pieces), ZERO))
+            unused_rows.append([f"Total {asset}"] + [""] * 9 + [number(total_crypto), "", number(total_basis)])
+            allocation_rows: List[List[str]] = []
+            for wallet, lot, coins in pieces:
+                row, day, _, price, _, _ = lots[lot]
+                basis = RP2Decimal(price) * RP2Decimal(coins)
+                allocation_rows.append(
+                    [asset, wallet, "Bob", lot, number(RP2Decimal(row)), day, number(RP2Decimal(coins)), number(RP2Decimal(price)), number(basis)]
+                )
+            allocation_rows.append([f"Total {asset}", "", "", "", "", "", number(total_crypto), "", number(total_basis)])
+            wallet_rows: List[List[str]] = []
+            for order, wallet in enumerate(wallet_order, start=1):
+                wallet_pieces = [(lot, RP2Decimal(coins)) for piece_wallet, lot, coins in pieces if piece_wallet == wallet]
+                crypto = RP2Decimal(sum((coins for _, coins in wallet_pieces), ZERO))
+                basis = RP2Decimal(sum((RP2Decimal(lots[lot][3]) * coins for lot, coins in wallet_pieces), ZERO))
+                # The opening balance is what the wallet held at the switch: it matches what it got.
+                wallet_rows.append(
+                    [asset, number(RP2Decimal(order)), wallet, "Bob", number(crypto), number(crypto), number(basis), number(RP2Decimal(len(wallet_pieces)))]
+                )
+            wallet_rows.append([f"Total {asset}", "", "", "", number(total_crypto), number(total_crypto), number(total_basis), number(RP2Decimal(len(pieces)))])
+            return wallet_rows, unused_rows, allocation_rows
+
+        set_generation_language("en")
+        output_dir = Path("output") / Path("test_per_wallet_reports_opening_allocation")
+        shutil.rmtree(output_dir, ignore_errors=True)
+        output_dir.mkdir(parents=True)
+        report_path = output_dir / Path("r10_fifo_opening_allocation.ods")
+        switch = "2025-01-01T00:00:00+00:00"
+        for method_name, method in methods.items():
+            per_wallet_configuration = PerWalletConfiguration(
+                timezone_name="UTC",
+                unused_basis_allocation_method=method_name,
+                unused_basis_allocation_wallet_order=(_KRAKEN, _BLOCKFI, _COINBASE),
+                asset_2_unused_basis_allocation_method={"B2": "lifo"},
+                asset_2_unused_basis_allocation_wallet_order={"B2": (_COINBASE, _KRAKEN)},
+            )
+            # Hand-computed expected cells (BlockFi is in the order with nothing: it gets nothing). Numbers are as the cells hold them.
+            b1_wallets, b1_unused, b1_allocation = want_asset_rows("B1", ["Kraken", "BlockFi", "Coinbase"], method_2_allocation[method_name])
+            b1_wallets[1][4:8] = ["0", "0", "0", "0"]
+            b2_wallets, b2_unused, b2_allocation = want_asset_rows("B2", ["Coinbase", "Kraken"], b2_lots_and_pieces)
+            b3_wallets, b3_unused, b3_allocation = want_asset_rows("B3", ["Coinbase"], b3_lots_and_pieces)
+            want_sheets: Dict[str, List[List[str]]] = {
+                "Summary": [
+                    ["B1", switch, "UTC", "Configured", method_name.upper(), "unused_basis_allocation_method", "Kraken/Bob, BlockFi/Bob, Coinbase/Bob"]
+                    + ["unused_basis_allocation_wallet_order", "11.0", "11.0", "11.0", "2300.0", "2300.0"],
+                    ["B2", switch, "UTC", "Configured", "LIFO", "unused_basis_allocation_method.B2", "Coinbase/Bob, Kraken/Bob"]
+                    + ["unused_basis_allocation_wallet_order.B2", "4.0", "4.0", "4.0", "220.0", "220.0"],
+                    # Only Coinbase holds B3: no wallet order is needed, and the method is the default one.
+                    ["B3", switch, "UTC", "Automatic", method_name.upper(), "unused_basis_allocation_method", "Coinbase/Bob", ""]
+                    + ["1.0", "1.0", "1.0", "1000.0", "1000.0"],
+                ],
+                "Wallets": b1_wallets + b2_wallets + b3_wallets,
+                "Unused Lots": b1_unused + b2_unused + b3_unused,
+                "Allocation": b1_allocation + b2_allocation + b3_allocation,
+            }
+            for with_later_transactions in (False, True):
+                with self.subTest(method=method_name, with_later_transactions=with_later_transactions):
+                    configuration = _create_configuration(per_wallet_configuration)
+                    asset_to_computed_data: Dict[str, ComputedData] = {}
+                    for asset in ("B1", "B2", "B3"):
+                        input_data = self._create_input_data(
+                            configuration, transactions[asset] + (later_transactions[asset] if with_later_transactions else []), asset
+                        )
+                        allocation_method = AccountingMethodLIFO() if asset == "B2" else method
+                        asset_to_computed_data[asset] = compute_tax_per_wallet(
+                            configuration, self._create_accounting_engine(None), input_data, allocation_method
+                        )
+                    OpeningAllocationGenerator().generate(US(), {1970: "fifo"}, asset_to_computed_data, str(output_dir), "r10_", MIN_DATE, MAX_DATE, "en")
+                    for sheet_name, want_rows in want_sheets.items():
+                        # The first three rows are the title and the two header rows.
+                        got_rows: List[List[str]] = (read_sheet_rows(report_path, sheet_name) or [])[3:]
+                        self.assertEqual(got_rows, want_rows, msg=sheet_name)
+
+        # A report that ends before the switch has no opening allocation: no file, and the file of the earlier run is removed.
+        self.assertTrue(report_path.exists())
+        configuration = _create_configuration(per_wallet_configuration, to_date=date(2024, 12, 31))
+        input_data = self._create_input_data(configuration, transactions["B1"] + later_transactions["B1"], "B1")
+        computed_data = compute_tax_per_wallet(configuration, self._create_accounting_engine(None), input_data, AccountingMethodFIFO())
+        self.assertIsNone(computed_data.opening_allocation)
+        OpeningAllocationGenerator().generate(US(), {1970: "fifo"}, {"B1": computed_data}, str(output_dir), "r10_", MIN_DATE, date(2024, 12, 31), "en")
+        self.assertFalse(report_path.exists())
 
 
 if __name__ == "__main__":

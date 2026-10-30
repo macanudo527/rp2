@@ -165,15 +165,15 @@ class AbstractPerWalletTest(unittest.TestCase):
         self.maxDiff = None  # pylint: disable=invalid-name
 
     @staticmethod
-    def _create_input_data(configuration: Configuration, transactions: List[object]) -> InputData:
-        sets = {name: TransactionSet(configuration, name, _ASSET) for name in ("IN", "OUT", "INTRA")}
+    def _create_input_data(configuration: Configuration, transactions: List[object], asset: str = _ASSET) -> InputData:
+        sets = {name: TransactionSet(configuration, name, asset) for name in ("IN", "OUT", "INTRA")}
         for row, transaction in enumerate(transactions, start=1):
             if isinstance(transaction, _In):
                 sets["IN"].add_entry(
                     InTransaction(
                         configuration,
                         transaction.timestamp,
-                        _ASSET,
+                        asset,
                         transaction.exchange,
                         "Bob",
                         transaction.transaction_type,
@@ -189,7 +189,7 @@ class AbstractPerWalletTest(unittest.TestCase):
                     OutTransaction(
                         configuration,
                         transaction.timestamp,
-                        _ASSET,
+                        asset,
                         transaction.exchange,
                         "Bob",
                         "Sell",
@@ -206,7 +206,7 @@ class AbstractPerWalletTest(unittest.TestCase):
                     IntraTransaction(
                         configuration,
                         transaction.timestamp,
-                        _ASSET,
+                        asset,
                         transaction.from_exchange,
                         "Bob",
                         transaction.to_exchange,
@@ -219,7 +219,7 @@ class AbstractPerWalletTest(unittest.TestCase):
                     )
                 )
         # Like the input parser, the input data is filtered with the dates of the configuration.
-        return InputData(_ASSET, sets["IN"], sets["OUT"], sets["INTRA"], from_date=configuration.from_date, to_date=configuration.to_date)
+        return InputData(asset, sets["IN"], sets["OUT"], sets["INTRA"], from_date=configuration.from_date, to_date=configuration.to_date)
 
     @staticmethod
     def _create_accounting_engine(years_2_methods: Optional[Dict[int, AbstractAccountingMethod]]) -> AccountingEngine:

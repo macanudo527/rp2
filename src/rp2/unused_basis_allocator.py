@@ -20,22 +20,19 @@ from rp2.account import Account
 from rp2.configuration import Configuration
 from rp2.in_transaction import InTransaction
 from rp2.logger import LOGGER
+from rp2.opening_allocation import OpeningAllocation, UnusedLot
 from rp2.plugin.accounting_method.fifo import AccountingMethod as AccountingMethodFIFO
 from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2TypeError, RP2ValueError
 from rp2.transfer_analyzer import TransferAnalyzer
 
 
-class UnusedLot(NamedTuple):
-    acquired_lot: InTransaction
-    # Amount of the lot not yet disposed of under universal application at the time of the switch.
-    amount: RP2Decimal
-
-
-# The allocation method and wallet order actually applied (see UnusedBasisAllocator._get_allocation_rule()).
+# The allocation method and wallet order actually applied (see UnusedBasisAllocator._get_allocation_rule()): the wallets that hold nothing
+# at the switch are left out of wallet_order, and is_automatic is True if only one wallet holds units.
 class _AllocationRule(NamedTuple):
     allocation_method: AbstractAccountingMethod
     wallet_order: List[Account]
+    is_automatic: bool
 
 
 # UnusedBasisAllocator implements the transition from universal to per-wallet application: it assigns the lots that are still unused (under
@@ -44,53 +41,86 @@ class _AllocationRule(NamedTuple):
 # 1) sort the unused lots with the given accounting method (e.g. FIFO: oldest first);
 # 2) fill the wallets in the given order, each one up to its balance at the switch.
 # Each allocated lot piece becomes an artificial InTransaction at the switch instant, in the wallet it was allocated to: it points to the
-# original lot (from_lot) and keeps its per-unit cost basis and acquisition date. The specific-unit allocation of Rev. Proc. 2024-28 is
-# not supported.
+# original lot (from_lot) and keeps its per-unit cost basis and acquisition date. They represent pieces of the lots of the input, not new
+# purchases nor transfers: they are never income (see InTransaction.is_earning()) and reports refer to their original lot. The result of the
+# allocation, with everything the opening allocation report needs, is an OpeningAllocation. The specific-unit allocation of Rev. Proc.
+# 2024-28 is not supported.
 class UnusedBasisAllocator:
+    # allocation_method and wallet_order are the configured rule of the asset (None and empty if not configured), and allocation_method_field
+    # and wallet_order_field are the names of the configuration fields they come from (e.g. unused_basis_allocation_wallet_order.BTC), which
+    # the opening allocation report shows.
     def __init__(
         self,
         configuration: Configuration,
+        asset: str,
         switch_timestamp: datetime,
         unused_lots: List[UnusedLot],
         account_2_balance: Dict[Account, RP2Decimal],
         allocation_method: Optional[AbstractAccountingMethod],
         wallet_order: List[Account],
+        allocation_method_field: Optional[str] = None,
+        wallet_order_field: Optional[str] = None,
     ) -> None:
         self.__configuration = Configuration.type_check("configuration", configuration)
+        self.__asset = Configuration.type_check_string("asset", asset)
         if not isinstance(switch_timestamp, datetime) or switch_timestamp.tzinfo is None:
             raise RP2TypeError(f"Parameter 'switch_timestamp' is not a timezone-aware datetime: {switch_timestamp}")
         self.__switch_timestamp = switch_timestamp
         self.__unused_lots = unused_lots
+        self.__all_account_2_balance = dict(account_2_balance)
         self.__account_2_balance = {account: balance for account, balance in account_2_balance.items() if balance > ZERO}
         if allocation_method is not None and not isinstance(allocation_method, AbstractAccountingMethod):
             raise RP2TypeError(f"Parameter 'allocation_method' is not of type AbstractAccountingMethod: {allocation_method}")
         self.__allocation_method = allocation_method
         self.__wallet_order = wallet_order
+        self.__allocation_method_field = allocation_method_field
+        self.__wallet_order_field = wallet_order_field
 
-    # Returns the allocated lots: artificial InTransactions at the switch instant, one per (wallet, lot piece).
-    def allocate(self) -> List[InTransaction]:
+    # Returns the opening allocation, whose allocated lots are artificial InTransactions at the switch instant, one per (wallet, lot piece),
+    # or None if no wallet holds units at the switch (there is nothing to allocate).
+    def allocate(self) -> Optional[OpeningAllocation]:
         funded_accounts = sorted(self.__account_2_balance, key=_account_sort_key)
         if not funded_accounts:
-            return []
+            return None
         rule = self._get_allocation_rule(funded_accounts)
         per_wallet_method = TransferAnalyzer.get_per_wallet_accounting_method(rule.allocation_method)
 
         def unused_lot_sort_key(unused_lot: UnusedLot) -> AcquiredLotSortKey:
             return per_wallet_method.sort_key(unused_lot.acquired_lot)
 
-        result = self._fill_wallets(rule.wallet_order, sorted(self.__unused_lots, key=unused_lot_sort_key))
-        LOGGER.info("Unused basis allocation at %s: allocated %d lot pieces to %d wallets", self.__switch_timestamp, len(result), len(rule.wallet_order))
-        return result
+        sorted_unused_lots = sorted(self.__unused_lots, key=unused_lot_sort_key)
+        allocated_lots = self._fill_wallets(rule.wallet_order, sorted_unused_lots)
+        LOGGER.info(
+            "%s: unused basis allocation at %s: allocated %d lot pieces to %d wallets",
+            self.__asset,
+            self.__switch_timestamp,
+            len(allocated_lots),
+            len(rule.wallet_order),
+        )
+        return OpeningAllocation(
+            asset=self.__asset,
+            switch_timestamp=self.__switch_timestamp,
+            is_automatic=rule.is_automatic,
+            allocation_method_name=rule.allocation_method.name,
+            # The configured order is the one that was applied (wallets in it that hold nothing get nothing). An automatic allocation doesn't
+            # use it: its order is the only wallet that holds units.
+            wallet_order=rule.wallet_order if rule.is_automatic else self.__wallet_order,
+            account_2_balance=self.__all_account_2_balance,
+            unused_lots=sorted_unused_lots,
+            allocated_lots=allocated_lots,
+            allocation_method_field=self.__allocation_method_field if self.__allocation_method is not None else None,
+            wallet_order_field=None if rule.is_automatic else self.__wallet_order_field,
+        )
 
     # The allocation rule to apply. With a single funded wallet there's nothing to choose: all unused lots go to it. With more wallets the
     # rule must be configured explicitly (Rev. Proc. 2024-28 requires the taxpayer to choose it before the switch) and cover all of them.
     def _get_allocation_rule(self, funded_accounts: List[Account]) -> _AllocationRule:
         if len(funded_accounts) == 1:
-            return _AllocationRule(self.__allocation_method or AccountingMethodFIFO(), funded_accounts)
+            return _AllocationRule(self.__allocation_method or AccountingMethodFIFO(), funded_accounts, True)
         if self.__allocation_method is None or not self.__wallet_order:
             raise RP2ValueError(
                 f"Unused basis allocation is needed at {self.__switch_timestamp} ({len(funded_accounts)} wallets hold "
-                f"{self.__unused_lots[0].acquired_lot.asset if self.__unused_lots else ''} funds: "
+                f"{self.__asset} funds: "
                 f"{', '.join(_account_sort_key(account) for account in funded_accounts)}), but the 'unused_basis_allocation_method' "
                 "and 'unused_basis_allocation_wallet_order' fields are not defined in the country section of the configuration file (e.g. country.us) "
                 "(see Rev. Proc. 2024-28)"
@@ -102,7 +132,7 @@ class UnusedBasisAllocator:
                 f"{', '.join(_account_sort_key(account) for account in missing_accounts)}"
             )
         # Wallets in the order that hold no funds at the switch get nothing.
-        return _AllocationRule(self.__allocation_method, [account for account in self.__wallet_order if account in self.__account_2_balance])
+        return _AllocationRule(self.__allocation_method, [account for account in self.__wallet_order if account in self.__account_2_balance], False)
 
     # Walks the wallets (in order) and the sorted lots together, like merging two queues: each step moves as much as possible of the current
     # lot into the current wallet, then advances whichever of the two is used up (a lot can be split across wallets and a wallet can receive

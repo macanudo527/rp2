@@ -64,6 +64,7 @@ class US(AbstractCountry):
     def get_report_generators(self) -> Set[str]:
         return {
             "open_positions",
+            "opening_allocation",
             "rp2_full_report",
             "us.tax_report_us",
         }

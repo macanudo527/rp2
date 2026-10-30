@@ -94,7 +94,8 @@ tax_engine.compute_tax_per_wallet():
   - at the switch: UnusedBasisAllocator assigns the lots still unused under universal application to the
     wallets holding funds (Rev. Proc. 2024-28 global allocation; explicit config if > 1 funded wallet),
     as artificial InTransactions (from_lot = original lot, same per-unit basis and acquisition date).
-    It runs whenever there are funds at the switch, even with no transactions after it
+    It runs whenever there are funds at the switch, even with no transactions after it, and returns an OpeningAllocation
+    (ComputedData.opening_allocation: balances, unused lots, rule, pieces), shown by the opening_allocation report (US)
   - after the switch: TransferAnalyzer(...).analyze_and_pair() processes transactions chronologically
     (same timestamp: In, Intra, Out, then row), per wallet, with the accounting method of each year:
       InTransaction → lot added to its wallet (earn types → income GainLoss)
@@ -105,7 +106,7 @@ tax_engine.compute_tax_per_wallet():
   - TransferAnalyzer also records what each wallet holds at the end of the report's to_date (WalletLot list; to_date is on or after
     the switch here): ComputedData.wallet_lots, used by the open positions report for each wallet's actual cost basis
   ↓
-ComputedData (asset → GainLossSet: universal pre-switch + per-wallet post-switch; wallet_lots)
+ComputedData (asset → GainLossSet: universal pre-switch + per-wallet post-switch; wallet_lots; opening_allocation)
   ↓
 plugin/report/ generators → ODS output files + logs
 ```
@@ -138,6 +139,7 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 | `AcquisitionDateFifo` | `acquisition_date_fifo.py` | Per-wallet FIFO: orders lots by original acquisition date (`cost_basis_timestamp`), not arrival date |
 | `WalletLot` | `wallet_lot.py` | Per-wallet inventory: the units of one lot held by one wallet at the report's to_date (amount, cost basis, original acquisition date and lot); `ComputedData.wallet_lots` (None in universal application) |
 | `UnusedBasisAllocator` | `unused_basis_allocator.py` | [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf) global allocation of unused lots to wallets at the per-wallet switch |
+| `OpeningAllocation` | `opening_allocation.py` | Record of one asset's allocation at the switch (opening balances, `UnusedLot`s in method order, rule: method, wallet order, config fields or automatic, allocated pieces); `ComputedData.opening_allocation`, shown by `plugin/report/opening_allocation.py` |
 | `PerWalletConfiguration` | `per_wallet_configuration.py` | per-wallet fields of the `[country.<code>]` config section: timezone (an IANA identifier resolved with `zoneinfo`: `UTC` or Area/Location; abbreviations like EST and `localtime` are rejected), unused basis allocation rule (default plus per-asset overrides, `<field>.<asset>`) |
 | `ApplicationPolicy` | `application_policy.py` | Per-year allowed/default `ApplicationMode` (universal, per-wallet) of a country (`AbstractCountry.get_application_policy()`); resolves the user's optional `application_mode` and the per-wallet switch year |
 | `GlobalAllocator` | `global_allocation.py` | Earlier, unwired prototype of global allocation (superseded by `UnusedBasisAllocator`) |
@@ -165,7 +167,7 @@ Country-specific CLI entry points (e.g., `rp2_us`, `rp2_jp`) each call `rp2_main
 #### Per-Wallet and Global Allocation Tests (new)
 
 - `tests/test_per_wallet_tax_engine.py` — end-to-end, hand-computed examples for `compute_tax_per_wallet` (edge cases: fees, zero-receipt transfers, #149, holding period, allocation (also without later transactions, and reports ending before the switch), timezone boundary, same-timestamp order, cycles, method change, dust).
-- `tests/test_per_wallet_reports.py` — per-wallet report output, checked in actual ODS cells (transfer fees, zero-receipt transfers, remaining basis, artificial lots).
+- `tests/test_per_wallet_reports.py` — per-wallet report output, checked in actual ODS cells (transfer fees, zero-receipt transfers, remaining basis, artificial lots, opening allocation report: all four methods, split lots, per-asset overrides, automatic allocation, zero-balance wallets, unchanged by later transactions, none before the switch).
 - `tests/per_wallet_common.py` — shared helpers of the two files above: short-form transactions (`_In`, `_Out`, `_Intra`), expected gain/losses, wallets, `AbstractPerWalletTest` and `_create_configuration()` (a test configuration file with the `[country.us]` section of the given per-wallet settings: `compute_tax_per_wallet()` reads them from the configuration).
 - `tests/test_per_wallet_properties.py` — hypothesis property tests (random histories include zero-receipt transfers): wallet lots = wallet balance after each step, basis/lot conservation, single wallet per-wallet == universal, JP universal results unaffected.
 - `tests/test_ods_output_diff_per_wallet.py` — CLI: country section doesn't change pre-2025 output (the datasets' timestamps fall on the same dates in New York); a report that reaches 2025 with transactions or holdings in it needs `[country.us]`, one that ends before 2025 (`-t`) doesn't; conflicting `application_mode` and other countries' sections are rejected; `-w` no longer exists.

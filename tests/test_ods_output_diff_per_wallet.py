@@ -27,7 +27,7 @@ from abstract_test_ods_output_diff import (
     AbstractTestODSOutputDiff,
     OutputPlugins,
 )
-from ods_diff import ods_diff
+from ods_diff import ods_diff, read_sheet_rows
 
 ROOT_PATH: Path = Path(os.path.dirname(__file__)).parent.absolute()
 
@@ -171,10 +171,20 @@ class TestODSOutputDiffPerWallet(AbstractTestODSOutputDiff):
             "switch, 0 transactions after it",
             result.stdout + result.stderr,
         )
+        # The opening allocation report: only Coinbase/Bob holds B4 (0.5 units of the lot bought for $10 per unit), so the allocation is
+        # automatic, with FIFO (no method is configured). The switch is midnight in New York.
+        allocation_path = self.output_dir / Path("us") / Path("fifo_opening_allocation.ods")
+        summary_rows = (read_sheet_rows(allocation_path, "Summary") or [])[3:]
+        want_summary_rows = [
+            ["B4", "2025-01-01T00:00:00-05:00", "America/New_York", "Automatic", "FIFO", "", "Coinbase/Bob", "", "0.5", "0.5", "0.5", "5.0", "5.0"]
+        ]
+        self.assertEqual(summary_rows, want_summary_rows)
         # If B4 holds nothing at the end of the report and has no transactions in 2025, there's nothing to allocate: universal application.
+        # The opening allocation report of the previous run is removed, since it doesn't belong to this one.
         result = self._run("us", "", self.input_sold_path, ["-t", "2025-12-31"])
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)
         self.assertNotIn("per-wallet application from", result.stdout + result.stderr)
+        self.assertFalse(allocation_path.exists())
         # A report that ends before 2025 doesn't need the per-wallet settings, even if the input has transactions in 2025.
         result = self._run("us", "", self.input_2025_path, ["-t", "2024-12-31"])
         self.assertEqual(result.returncode, 0, msg=result.stdout + result.stderr)

@@ -52,8 +52,7 @@ class AbstractODSGenerator(AbstractReportGenerator):
         if not isinstance(template_sheets_to_keep, Set):
             raise RP2TypeError(f"Parameter 'template_sheets_to_keep' is not a Set: {template_sheets_to_keep}")
 
-        accounting_method: str = years_2_accounting_method_names[MIN_DATE.year] if len(years_2_accounting_method_names) == 1 else "mixed"
-        output_file_path: Path = Path(output_dir_path) / Path(f"{output_file_prefix}{accounting_method}_{output_file_name}")
+        output_file_path: Path = cls._get_output_file_path(years_2_accounting_method_names, output_dir_path, output_file_prefix, output_file_name)
         if Path(output_file_path).exists():
             output_file_path.unlink()
 
@@ -109,6 +108,13 @@ class AbstractODSGenerator(AbstractReportGenerator):
             del output_file.sheets[index]
 
         return output_file
+
+    # Path of an output file: <output_dir_path>/<output_file_prefix><accounting method>_<output_file_name>, where the accounting method is
+    # "mixed" if it changes over the years (e.g. output/crypto_example_fifo_open_positions.ods).
+    @staticmethod
+    def _get_output_file_path(years_2_accounting_method_names: Dict[int, str], output_dir_path: str, output_file_prefix: str, output_file_name: str) -> Path:
+        accounting_method: str = years_2_accounting_method_names[MIN_DATE.year] if len(years_2_accounting_method_names) == 1 else "mixed"
+        return Path(output_dir_path) / Path(f"{output_file_prefix}{accounting_method}_{output_file_name}")
 
     def _get_template_path(self, template_name: str, country: Optional[AbstractCountry], generation_language: str) -> str:
         country_path = f"{country.country_iso_code}/" if country else ""

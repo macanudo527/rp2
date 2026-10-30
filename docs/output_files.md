@@ -20,6 +20,7 @@
   * **[RP2 Full Output Report: Transparent Computation](#rp2-full-report-transparent-computation)**
     * [Hyperlinks](#hyperlinks)
   * **[Open Positions Report: Unrealized Gains](#open-positions-report-unrealized-gains)**
+  * **[Opening Allocation Report: Unused Basis at the Switch](#opening-allocation-report-unused-basis-at-the-switch)**
 * **[Country-specific Reports](#country-specific-reports)**
   * **[Tax Report US: Advisor-Friendly Report](#tax-report-us-advisor-friendly-report)**
   * **[Tax Report IE: Advisor-Friendly Report](#tax-report-ie-advisor-friendly-report)**
@@ -60,7 +61,18 @@ The report contains:
 
 The cost basis of each exchange depends on how the asset is computed at the end of the report period (see [universal and per-wallet application](user_faq.md#do-accounting-methods-use-universal-or-per-wallet-application)):
 * universal application: the asset's remaining cost basis is shared among its exchanges in proportion to their balances, so all exchanges have the same per-unit cost basis (with a from date, lots acquired before it are left out);
-* per-wallet application (only for assets with transactions in a year that uses it): each exchange shows the actual cost basis of the units it holds at the end of the report period (the to date), and the Asset sheet adds up the exchanges of each holder. Example: 1 unit bought for 100 on exchange A and 1 unit bought for 1,000 on exchange B: A shows 100 and B 1,000 (universal application would show 550 for each).
+* per-wallet application (for assets that need it in the report period, see the [FAQ](user_faq.md#how-do-i-use-per-wallet-application)): each exchange shows the actual cost basis of the units it holds at the end of the report period (the to date), and the Asset sheet adds up the exchanges of each holder. Example: 1 unit bought for 100 on exchange A and 1 unit bought for 1,000 on exchange B: A shows 100 and B 1,000 (universal application would show 550 for each).
+
+### Opening Allocation Report: Unused Basis at the Switch
+The opening_allocation.ods output file is generated for countries that switch from universal to per-wallet application (the US, on January 1st, 2025: see the [FAQ](user_faq.md#how-do-i-use-per-wallet-application)), if the report reaches the switch (whatever the `-f` date: the allocation is the starting point of every later year) and some wallet holds units then. It shows how the cost basis of those units was assigned to the wallets (the global allocation of [Rev. Proc. 2024-28](https://www.irs.gov/pub/irs-drop/rp-24-28.pdf)), as it was made at the switch: transactions after the switch don't change it. If a run has no opening allocation (e.g. the report ends before 2025), the file isn't generated, and the one of an earlier run with the same output directory and prefix is removed. If the config file has a `generators` field, add `opening_allocation` to it to get this report.
+
+The report contains a Legend sheet (accounting method and the meaning of each column) and these sheets, with a block of rows for each asset:
+* Summary: the switch instant and time zone (the `timezone` of the config file), the rule (allocation method, wallet order and the config fields they come from, e.g. `unused_basis_allocation_wallet_order.BTC` for a per-asset override; "Automatic" if only one wallet holds units, which needs no rule) and the totals that must match: the units of the unused lots, of the allocated pieces and of the wallets at the switch, and the cost basis of the unused lots and of the allocated pieces;
+* Wallets: the units each wallet held at the switch (its opening balance, computed from the transactions before it) and the units, cost basis and number of pieces it received. Wallets in the order that held nothing receive nothing;
+* Unused Lots: the lots that universal application hadn't disposed of at the switch, in the order of the allocation method: unique_id and row in the input, acquisition date, wallet where they were acquired, spot price, units, unused units, per-unit cost basis and unused cost basis;
+* Allocation: one row for each piece of an unused lot assigned to a wallet: the wallet, the source lot (unique_id, input row and acquisition date), units, per-unit cost basis and cost basis.
+
+Example: in 2024 buy 10 coins for $100 each on Coinbase (lot i1) and 10 for $200 each on Kraken (lot i2), then move 5 coins from Coinbase to Kraken. At the switch Coinbase holds 5 coins and Kraken 15. With FIFO and the wallet order Kraken, Coinbase, the Allocation sheet has three rows: Kraken gets 10 coins of i1 ($1,000) and 5 coins of i2 ($1,000), and Coinbase the other 5 coins of i2 ($1,000).
 
 ## Country-specific Reports
 
