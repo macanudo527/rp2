@@ -58,6 +58,39 @@ def get_years_and_accounting_methods(years_2_methods: AVLTree[int, AbstractAccou
     return sorted(result, key=_get_year)
 
 
+# The tax years in which an accounting method is used: from start_year to end_year (both included), or every year from start_year on if
+# end_year is None. Its description is "2021: LIFO", "2024-2025: FIFO" or "2026+: HIFO" (method names in upper case, as in the reports).
+class AccountingMethodYears(NamedTuple):
+    start_year: int
+    end_year: Optional[int]
+    accounting_method_name: str
+
+    def get_description(self) -> str:
+        years: str
+        if self.end_year is None:
+            years = f"{self.start_year}+"
+        elif self.end_year == self.start_year:
+            years = str(self.start_year)
+        else:
+            years = f"{self.start_year}-{self.end_year}"
+        return f"{years}: {self.accounting_method_name.upper()}"
+
+
+# The year ranges of a year-to-method-name map (e.g. the accounting_methods section of the configuration), as AccountingEngine applies them:
+# each tax year uses the method of the latest entry at or before it. So an entry lasts until the year before the next entry, the last one
+# has no end, and years before the first entry have no method. The order of the map doesn't matter. Example: {2026: "hifo", 2024: "fifo"}
+# gives 2024-2025: FIFO and 2026+: HIFO (FIFO in 2025, the year between the two entries).
+def get_accounting_method_years(years_2_accounting_method_names: Mapping[int, str]) -> List[AccountingMethodYears]:
+    if not isinstance(years_2_accounting_method_names, Mapping):
+        raise RP2TypeError(f"Parameter 'years_2_accounting_method_names' is not a Mapping: {years_2_accounting_method_names}")
+    years: List[int] = sorted(years_2_accounting_method_names)
+    next_years: List[Optional[int]] = [*years[1:], None]
+    return [
+        AccountingMethodYears(year, next_year - 1 if next_year is not None else None, years_2_accounting_method_names[year])
+        for year, next_year in zip(years, next_years)
+    ]
+
+
 # A private copy of a year-to-method map: the caller can't change it afterwards (e.g. by inserting a year).
 def _copy_years_2_methods(years_2_methods: AVLTree[int, AbstractAccountingMethod]) -> AVLTree[int, AbstractAccountingMethod]:
     result: AVLTree[int, AbstractAccountingMethod] = AVLTree()

@@ -22,6 +22,7 @@ import ezodf
 from rp2.abstract_country import AbstractCountry
 from rp2.abstract_report_generator import AbstractReportGenerator
 from rp2.abstract_transaction import AbstractTransaction
+from rp2.accounting_engine import get_accounting_method_years
 from rp2.computed_data import ComputedData
 from rp2.configuration import MAX_DATE, MIN_DATE, Configuration
 from rp2.gain_loss import GainLoss
@@ -89,13 +90,10 @@ class AbstractODSGenerator(AbstractReportGenerator):
                 if only_accounting_method_name is not None:
                     accounting_method_by_year.append(only_accounting_method_name.upper())
                 else:
-                    old_year = MIN_DATE.year
-                    for year, method in years_2_accounting_method_names.items():
-                        if year - old_year > 1:
-                            accounting_method_by_year.append(f"{old_year}->{year}:{method.upper()}")
-                        else:
-                            accounting_method_by_year.append(f"{year}:{method.upper()}")
-                        old_year = year
+                    # The years of each method, as the engine applies them (e.g. "2024-2025: FIFO, 2026+: HIFO").
+                    accounting_method_by_year.extend(
+                        method_years.get_description() for method_years in get_accounting_method_years(years_2_accounting_method_names)
+                    )
                 cls._fill_cell(legend_sheet, index, 1, ", ".join(accounting_method_by_year), visual_style="transparent")
                 method_cell_found = True
                 cls._fill_cell(legend_sheet, index + 1, 1, from_date if from_date != MIN_DATE else "non-specified", visual_style="transparent")

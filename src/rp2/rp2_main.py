@@ -29,7 +29,7 @@ from rp2.abstract_accounting_method import AbstractAccountingMethod
 from rp2.abstract_country import AbstractCountry
 from rp2.abstract_report_generator import AbstractReportGenerator
 from rp2.abstract_transaction import AbstractTransaction
-from rp2.accounting_engine import AccountingEngine
+from rp2.accounting_engine import AccountingEngine, get_accounting_method_years
 from rp2.accounting_method_loader import ACCOUNTING_METHOD_PACKAGE, load_accounting_method
 from rp2.balance import CRYPTO_BALANCE_DECIMAL_MASK, BalanceSet
 from rp2.computed_data import ComputedData
@@ -100,19 +100,18 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
         else:  # neither is defined
             years_2_accounting_method_names = {MIN_DATE.year: country.get_default_accounting_method()}
 
-        old_year: int = MIN_DATE.year
         years_2_accounting_methods: AVLTree[int, AbstractAccountingMethod] = AVLTree()
         for year, accounting_method_name in years_2_accounting_method_names.items():
             accounting_method: AbstractAccountingMethod = _load_accounting_method(accounting_method_name)
-            if len(years_2_accounting_method_names) == 1:
-                LOGGER.info("Accounting method: %s", accounting_method_name)
-            else:
-                if year - old_year > 1:
-                    LOGGER.info("Accounting method for %s->%s: %s", old_year, year, accounting_method_name)
-                else:
-                    LOGGER.info("Accounting method for %s: %s", year, accounting_method_name)
             years_2_accounting_methods.insert_node(year, accounting_method)
-            old_year = year
+        if len(years_2_accounting_method_names) == 1:
+            LOGGER.info("Accounting method: %s", next(iter(years_2_accounting_method_names.values())))
+        else:
+            # The years of each method, as the engine applies them (e.g. "2024-2025: FIFO, 2026+: HIFO").
+            LOGGER.info(
+                "Accounting methods: %s",
+                ", ".join(method_years.get_description() for method_years in get_accounting_method_years(years_2_accounting_method_names)),
+            )
 
         accounting_engine: AccountingEngine = AccountingEngine(years_2_methods=years_2_accounting_methods)
 
