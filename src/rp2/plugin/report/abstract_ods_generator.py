@@ -85,8 +85,9 @@ class AbstractODSGenerator(AbstractReportGenerator):
         for index in range(0, 100):
             if legend_sheet[index, 0].value == _("Accounting Method"):
                 accounting_method_by_year: List[str] = []
-                if len(years_2_accounting_method_names) == 1:
-                    accounting_method_by_year.append(years_2_accounting_method_names[MIN_DATE.year].upper())
+                only_accounting_method_name: Optional[str] = cls._get_only_accounting_method_name(years_2_accounting_method_names)
+                if only_accounting_method_name is not None:
+                    accounting_method_by_year.append(only_accounting_method_name.upper())
                 else:
                     old_year = MIN_DATE.year
                     for year, method in years_2_accounting_method_names.items():
@@ -113,10 +114,23 @@ class AbstractODSGenerator(AbstractReportGenerator):
 
     # Path of an output file: <output_dir_path>/<output_file_prefix><accounting method>_<output_file_name>, where the accounting method is
     # "mixed" if it changes over the years (e.g. output/crypto_example_fifo_open_positions.ods).
-    @staticmethod
-    def _get_output_file_path(years_2_accounting_method_names: Dict[int, str], output_dir_path: str, output_file_prefix: str, output_file_name: str) -> Path:
-        accounting_method: str = years_2_accounting_method_names[MIN_DATE.year] if len(years_2_accounting_method_names) == 1 else "mixed"
+    @classmethod
+    def _get_output_file_path(
+        cls, years_2_accounting_method_names: Dict[int, str], output_dir_path: str, output_file_prefix: str, output_file_name: str
+    ) -> Path:
+        only_accounting_method_name: Optional[str] = cls._get_only_accounting_method_name(years_2_accounting_method_names)
+        accounting_method: str = only_accounting_method_name if only_accounting_method_name is not None else "mixed"
         return Path(output_dir_path) / Path(f"{output_file_prefix}{accounting_method}_{output_file_name}")
+
+    # The accounting method of every year, if the map has only one entry, or None if the method changes over the years. The only entry
+    # can have any year: without the accounting_methods section of the configuration it's 1970 (MIN_DATE.year), but the section can also
+    # contain a single entry with another year. Example: with "2010 = fifo" in the accounting_methods section the method is "fifo", and
+    # the output files are named <prefix>fifo_<report>.ods.
+    @staticmethod
+    def _get_only_accounting_method_name(years_2_accounting_method_names: Dict[int, str]) -> Optional[str]:
+        if len(years_2_accounting_method_names) != 1:
+            return None
+        return next(iter(years_2_accounting_method_names.values()))
 
     def _get_template_path(self, template_name: str, country: Optional[AbstractCountry], generation_language: str) -> str:
         country_path = f"{country.country_iso_code}/" if country else ""
