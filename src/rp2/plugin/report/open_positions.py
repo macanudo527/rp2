@@ -310,9 +310,6 @@ class Generator(AbstractODSGenerator):
             self._fill_cell(input_sheet, input_row_index, 1, _INPUT_VALUE_STRING, data_style="fiat_unit_7")
             row_indexes[_INPUT] = input_row_index + 1
 
-            _vlookup_formula: str = ""
-            _lookup_field: str = ""
-
             # Complete the asset table.
             for holder, holder_crypto_balance in asset_crypto_balance_holder[asset].items():
                 holder_unit_cost_basis: RP2Decimal = unit_cost_basis
@@ -326,8 +323,6 @@ class Generator(AbstractODSGenerator):
 
                 asset_sheet.append_rows(1)
                 asset_row_index: int = row_indexes[_ASSET]
-                _vlookup_formula = f"VLOOKUP(A{asset_row_index+1};${_('Input')}.A:B;2;0)"
-                _lookup_field = f'=IF({_vlookup_formula}="{_INPUT_VALUE_STRING}";"{_REPORT_INPUT_VALUE_STRING}";{_vlookup_formula}'
 
                 self._fill_cell(asset_sheet, asset_row_index, 0, asset)
                 self._fill_cell(asset_sheet, asset_row_index, 1, holder)
@@ -335,7 +330,7 @@ class Generator(AbstractODSGenerator):
                 self._fill_cell(asset_sheet, asset_row_index, 3, holder_unit_cost_basis, data_style=self._get_unit_data_style(holder_unit_cost_basis))
                 self._fill_cell(asset_sheet, asset_row_index, 4, holder_cost_basis, data_style="fiat")
                 self._fill_cell(asset_sheet, asset_row_index, 5, holder_cost_basis / total_cost_basis, data_style="percent")
-                self._fill_cell(asset_sheet, asset_row_index, 6, _lookup_field, data_style=unit_data_style)
+                self._fill_cell(asset_sheet, asset_row_index, 6, self._get_price_formula(asset_row_index), data_style=unit_data_style)
                 self._fill_cell(asset_sheet, asset_row_index, 7, f"=C{asset_row_index+1}*G{asset_row_index+1}", data_style="fiat")
                 self._fill_cell(asset_sheet, asset_row_index, 8, f"=H{asset_row_index+1}-E{asset_row_index+1}", data_style="fiat")
                 self._fill_cell(asset_sheet, asset_row_index, 9, f"=(H{asset_row_index+1}-E{asset_row_index+1})/E{asset_row_index+1}", data_style="percent")
@@ -352,8 +347,6 @@ class Generator(AbstractODSGenerator):
 
                     asset_exchange_sheet.append_rows(1)
                     asset_exchange_row_index: int = row_indexes[_ASSET_EXCHANGE]
-                    _vlookup_formula = f"VLOOKUP(A{asset_exchange_row_index+1};${_('Input')}.A:B;2;0)"
-                    _lookup_field = f'=IF({_vlookup_formula}="{_INPUT_VALUE_STRING}";"{_REPORT_INPUT_VALUE_STRING}";{_vlookup_formula}'
 
                     self._fill_cell(asset_exchange_sheet, asset_exchange_row_index, 0, asset)
                     self._fill_cell(asset_exchange_sheet, asset_exchange_row_index, 1, holder)
@@ -368,7 +361,9 @@ class Generator(AbstractODSGenerator):
                     )
                     self._fill_cell(asset_exchange_sheet, asset_exchange_row_index, 5, exchange_cost_basis, data_style="fiat")
                     self._fill_cell(asset_exchange_sheet, asset_exchange_row_index, 6, exchange_cost_basis / total_cost_basis, data_style="percent")
-                    self._fill_cell(asset_exchange_sheet, asset_exchange_row_index, 7, _lookup_field, data_style=unit_data_style)
+                    self._fill_cell(
+                        asset_exchange_sheet, asset_exchange_row_index, 7, self._get_price_formula(asset_exchange_row_index), data_style=unit_data_style
+                    )
                     self._fill_cell(
                         asset_exchange_sheet, asset_exchange_row_index, 8, f"=D{asset_exchange_row_index+1}*H{asset_exchange_row_index+1}", data_style="fiat"
                     )
@@ -587,6 +582,16 @@ class Generator(AbstractODSGenerator):
         if unit_cost_basis < _FIAT_UNIT_DATA_STYLE_4_DECIMAL_MINIMUM:
             return "fiat_unit_7"
         return "fiat"
+
+    # The price formula of a row of the Asset and Asset - Exchange sheets (row_index is 0-based): it shows the price that the user enters for
+    # the asset of the row (column A) in the Input sheet, or "See Input tab" while the Input sheet still has the placeholder "Enter asset value".
+    # Both sheets use this function, so they have the same formula. Example, for the first data row (row 4):
+    # =IF(VLOOKUP(A4;$Input.A:B;2;0)="Enter asset value";"See Input tab";VLOOKUP(A4;$Input.A:B;2;0))
+    # The last parenthesis closes the IF: without it (RP2 1.7.2) the formula isn't valid, although LibreOffice adds it when it opens the file.
+    @staticmethod
+    def _get_price_formula(row_index: int) -> str:
+        price_lookup: str = f"VLOOKUP(A{row_index + 1};${_('Input')}.A:B;2;0)"
+        return f'=IF({price_lookup}="{_INPUT_VALUE_STRING}";"{_REPORT_INPUT_VALUE_STRING}";{price_lookup})'
 
     # Per-wallet application: collects balances and actual cost basis by holder and exchange from the lots the wallets hold at to_date
     # (see ComputedData.wallet_lots) and returns the asset's cost basis (it's in asset_cost_bases only if positive, like in universal

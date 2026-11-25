@@ -13,12 +13,14 @@
 # limitations under the License.
 
 import re
+import zipfile
 from argparse import ArgumentParser, Namespace
 from difflib import unified_diff
 from itertools import zip_longest
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any, List, NamedTuple, Optional
+from xml.etree import ElementTree
 
 import ezodf
 
@@ -110,6 +112,72 @@ def read_sheet_cells(file_path: Path, sheet_name: str) -> Optional[List[List[Rep
             else:
                 cells.append(ReportCell(str(_parse_cell_value(cell))))
         result.append(cells)
+    return result
+
+
+_TABLE_NAMESPACE: str = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+
+
+# Why a formula isn't well formed, or None if it is: every parenthesis must be opened before it is closed and closed before the formula ends,
+# and every quote must be closed. Text in double quotes (a string, where "" is a quote in the string) and in single quotes (a sheet name,
+# where '' is a quote in the name) is skipped, because its parentheses are only text. Only the structure is checked: a well-formed formula
+# can still compute a wrong value. Examples: =IF(A1="(";1;2) is well formed; =IF(A1="(";1;2 has "1 unclosed parenthesis";
+# =SUM(A1:A2)) has "a ) without its (".
+def get_formula_problem(formula: str) -> Optional[str]:
+    depth: int = 0
+    index: int = 0
+    while index < len(formula):
+        character: str = formula[index]
+        if character in "\"'":
+            end: int = formula.find(character, index + 1)
+            # A doubled quote is a quote in the text: the text continues after it.
+            while end != -1 and formula[end + 1 : end + 2] == character:
+                end = formula.find(character, end + 2)
+            if end == -1:
+                return f"unclosed {character}"
+            index = end + 1
+            continue
+        if character == "(":
+            depth += 1
+        elif character == ")":
+            depth -= 1
+            if depth < 0:
+                return "a ) without its ("
+        index += 1
+    if depth > 0:
+        return f"{depth} unclosed parenthes{'is' if depth == 1 else 'es'}"
+    return None
+
+
+# The name of a column from its index (0-based): 0 is A, 25 is Z, 26 is AA.
+def _get_column_name(column_index: int) -> str:
+    name: str = ""
+    column_number: int = column_index + 1
+    while column_number > 0:
+        column_number, remainder = divmod(column_number - 1, 26)
+        name = chr(ord("A") + remainder) + name
+    return name
+
+
+# The formulas of an ODS file that aren't well formed (see get_formula_problem()), as "<sheet>.<cell>: <problem>: <formula>". Example:
+# "Asset.G4: 1 unclosed parenthesis: =IF(...". The formulas are read from the XML of the file (content.xml), not with ezodf, so that the
+# check doesn't depend on the library that writes the reports and that ods_diff() uses to compare them with golden files.
+def get_malformed_formulas(file_path: Path) -> List[str]:
+    with zipfile.ZipFile(file_path) as ods_file:
+        content: ElementTree.Element = ElementTree.fromstring(ods_file.read("content.xml"))
+    result: List[str] = []
+    for table in content.iter(f"{{{_TABLE_NAMESPACE}}}table"):
+        row_number: int = 1
+        for row in table.iter(f"{{{_TABLE_NAMESPACE}}}table-row"):
+            column_index: int = 0
+            # Merged cells (covered-table-cell) are columns too.
+            for cell in row:
+                formula: Optional[str] = cell.get(f"{{{_TABLE_NAMESPACE}}}formula")
+                problem: Optional[str] = get_formula_problem(formula) if formula is not None else None
+                if problem is not None:
+                    result.append(f"{table.get(f'{{{_TABLE_NAMESPACE}}}name')}.{_get_column_name(column_index)}{row_number}: {problem}: {formula}")
+                column_index += int(cell.get(f"{{{_TABLE_NAMESPACE}}}number-columns-repeated", "1"))
+            row_number += int(row.get(f"{{{_TABLE_NAMESPACE}}}number-rows-repeated", "1"))
     return result
 
 
