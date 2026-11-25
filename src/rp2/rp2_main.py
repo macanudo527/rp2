@@ -138,6 +138,7 @@ def _rp2_main_internal(country: AbstractCountry) -> None:  # pylint: disable=too
             input_data: InputData = parse_ods(configuration=configuration, asset=asset, input_file_handle=input_file_handle)
             LOGGER.debug("InputData object: %s", input_data)
             asset_2_input_data[asset] = input_data
+        _check_accounting_method_years(years_2_accounting_method_names, asset_2_input_data)
         report_end_date = _get_report_end_date(configuration, asset_2_input_data)
         asset_2_per_wallet_start_year: Dict[str, Optional[int]] = {}
         for asset in assets:
@@ -221,6 +222,24 @@ def _load_accounting_method(accounting_method_name: str) -> AbstractAccountingMe
     except (RP2TypeError, RP2ValueError) as exc:
         LOGGER.error("%s", exc)
         sys.exit(1)
+
+
+# Every sale, fee and transfer needs the accounting method of its tax year, to select the lots it takes coins from (each year uses the method of
+# the latest entry of the accounting_methods section at or before it, see get_accounting_method_years()). Checked before any computation, so
+# that a configuration whose first entry comes after such a transaction is reported clearly: e.g. "2025 = fifo" with a sale in 2020 used to
+# stop during the computation with "Internal error: no accounting method assigned for year 2020". Purchases and income don't take coins from
+# lots, so they can be in earlier years.
+def _check_accounting_method_years(years_2_accounting_method_names: Dict[int, str], asset_2_input_data: Dict[str, InputData]) -> None:
+    first_year = min(years_2_accounting_method_names)
+    for asset, input_data in asset_2_input_data.items():
+        for transaction_set in (input_data.unfiltered_out_transaction_set, input_data.unfiltered_intra_transaction_set):
+            for transaction in transaction_set:
+                if isinstance(transaction, AbstractTransaction) and transaction.tax_year < first_year:
+                    raise RP2ValueError(
+                        f"{asset}: the {type(transaction).__name__} of {transaction.timestamp} (row {transaction.row}) is in tax year "
+                        f"{transaction.tax_year}, which has no accounting method: the accounting_methods section of the configuration file starts "
+                        f"in {first_year} (add an entry for {transaction.tax_year} or earlier)"
+                    )
 
 
 # Last day of the report: the -t date, if given, otherwise the tax date (see Configuration.tax_timezone) of the last transaction in the input

@@ -115,5 +115,47 @@ class TestReversedAccountingMethods(unittest.TestCase):
                 self.assertFalse(diff, msg=diff)
 
 
+# R22 of the second review of eprbell/rp2#155 (follow-up): every sale, fee and transfer needs the accounting method of its tax year, so one in a
+# year before the first entry of the accounting_methods section is reported before any computation, with the asset, the transaction and the
+# first year. Before, the computation stopped with "Internal error: no accounting method assigned for year 2020". Purchases don't take coins
+# from lots, so they can be in earlier years. In test_data all transactions are in 2020 and 2021: B1 has only purchases (2020), B2 also has
+# sales in 2020.
+class TestTransactionsBeforeTheFirstMethod(unittest.TestCase):
+    def _run(self, first_year: int, extra_arguments: List[str]) -> Tuple[int, str, List[str]]:
+        output_dir = ROOT_PATH / Path("output") / Path(self.__module__) / Path(f"before_first_{first_year}_{'_'.join(extra_arguments)}")
+        shutil.rmtree(output_dir, ignore_errors=True)
+        output_dir.mkdir(parents=True)
+        config_text = (CONFIG_PATH / Path("test_data.ini")).read_text(encoding="utf-8")
+        config_path = output_dir / Path("config.ini")
+        config_path.write_text(f"{config_text}\n[accounting_methods]\n{first_year} = fifo\n", encoding="utf-8")
+        report_dir = output_dir / Path("reports")
+        arguments = ["rp2_us", "-n", *extra_arguments, "-o", str(report_dir), "-p", "t_", str(config_path), str(INPUT_PATH / Path("test_data.ods"))]
+        result = run(arguments, check=False, capture_output=True, text=True)
+        reports: List[str] = sorted(os.listdir(report_dir)) if report_dir.exists() else []
+        return result.returncode, result.stdout + result.stderr, reports
+
+    def test_sale_before_the_first_method(self) -> None:
+        returncode, output, reports = self._run(2021, ["-a", "B2"])
+        self.assertNotEqual(returncode, 0)
+        self.assertIn(
+            "B2: the OutTransaction of 2020-01-11 11:15:00+00:00 (row 16) is in tax year 2020, which has no accounting method: the "
+            "accounting_methods section of the configuration file starts in 2021 (add an entry for 2020 or earlier)",
+            output,
+        )
+        self.assertNotIn("Internal error", output)
+        no_reports: List[str] = []
+        self.assertEqual(reports, no_reports)
+
+    def test_purchases_before_the_first_method(self) -> None:
+        returncode, output, reports = self._run(2021, ["-a", "B1"])
+        self.assertEqual(returncode, 0, msg=output)
+        self.assertEqual(len(reports), 3, msg=str(reports))
+
+    def test_first_method_in_the_year_of_the_first_sale(self) -> None:
+        returncode, output, reports = self._run(2020, [])
+        self.assertEqual(returncode, 0, msg=output)
+        self.assertEqual(len(reports), 3, msg=str(reports))
+
+
 if __name__ == "__main__":
     unittest.main()
