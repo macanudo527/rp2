@@ -183,6 +183,21 @@ class TestODSOutputDiff(AbstractTestODSOutputDiff):  # pylint: disable=too-many-
             generation_language="en",
         )
 
+    # The Open Positions report of each dataset. Until R25 of the second review of eprbell/rp2#155 no test compared these golden files, and
+    # the one of test_data4 didn't match its input: it had 10 B4 with a cost basis of 100, but in the input Bob buys 1 B4 for 10 and sends out
+    # 0.5, so he holds 0.5 B4 with a cost basis of 5 (as in the full report of test_data4, which is compared).
+    def test_open_positions(self) -> None:
+        for test_name in ("crypto_example", "test_data", "test_data2", "test_data3", "test_data4", "test_many_year_data"):
+            with self.subTest(test_name=test_name):
+                self._compare(
+                    output_dir=self.output_dir,
+                    test_name=test_name,
+                    method="fifo",
+                    country="jp",
+                    output_plugin=OutputPlugins.OPEN_POSITIONS,
+                    generation_language="en",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
