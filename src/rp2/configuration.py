@@ -333,6 +333,15 @@ class Configuration:  # pylint: disable=too-many-public-methods
                 raise RP2ValueError(f"{configuration_path}: invalid year value in accounting method section (integer was expected): {year}") from exc
             except TypeError as exc:
                 raise RP2ValueError(f"{configuration_path}: invalid year type in accounting method section (integer was expected): {year}") from exc
+        # The methods must be accounting methods of the country, like the one given with -m: e.g. Spain only accepts fifo, so "2024 = hifo" is
+        # an error. Checked here, before any computation starts, so that a typo (e.g. "fifi") is reported at once.
+        accounting_methods = self.__country.get_accounting_methods()
+        for numeric_year, method in result.items():
+            if method not in accounting_methods:
+                raise RP2ValueError(
+                    f"{configuration_path}: invalid accounting method '{method}' for {numeric_year} in section '{section.name}': valid values "
+                    f"for country '{self.__country.country_iso_code}' are {', '.join(sorted(accounting_methods))}"
+                )
         return result
 
     # Name of the section with the country-specific choices of this country (e.g. country.us).

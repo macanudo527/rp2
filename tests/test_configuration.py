@@ -20,7 +20,7 @@ import time
 import unittest
 from configparser import ConfigParser
 from datetime import datetime, timedelta, timezone
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from typing import Dict, Optional
 
 from dateutil.tz import tzoffset, tzutc
@@ -29,6 +29,8 @@ from rp2.abstract_country import AbstractCountry
 from rp2.account import Account
 from rp2.application_policy import ApplicationMode
 from rp2.configuration import Configuration, Keyword
+from rp2.plugin.country.es import ES
+from rp2.plugin.country.ie import IE
 from rp2.plugin.country.jp import JP
 from rp2.plugin.country.us import US
 from rp2.rp2_decimal import ZERO, RP2Decimal
@@ -485,6 +487,50 @@ class TestConfiguration(unittest.TestCase):  # pylint: disable=too-many-public-m
             self._test_config(config)
 
         config[Keyword.ACCOUNTING_METHODS.value] = {"1970": "hifo", "2020": "lifo"}
+
+    # R22 of the second review of eprbell/rp2#155: the methods of the accounting_methods section must be accounting methods of the country, like
+    # the one given with -m. Before, they were loaded without this check: e.g. rp2_es with "2024 = hifo" used HIFO, although Spain only accepts
+    # FIFO. The check happens when the file is read, before any computation.
+    def test_accounting_method_section_uses_country_methods(self) -> None:
+        config = ConfigParser()
+        config.read("./config/test_data.ini")
+        for country in (ES(), IE(), JP()):
+            for method in ("hifo", "lifo", "lofo"):
+                with self.subTest(country=country.country_iso_code, method=method):
+                    config[Keyword.ACCOUNTING_METHODS.value] = {"2020": "fifo", "2024": method}
+                    with self.assertRaisesRegex(
+                        RP2ValueError,
+                        f"invalid accounting method '{method}' for 2024 in section 'accounting_methods': valid values for country "
+                        f"'{country.country_iso_code}' are fifo$",
+                    ):
+                        self._test_config(config, country)
+            with self.subTest(country=country.country_iso_code, method="fifo"):
+                config[Keyword.ACCOUNTING_METHODS.value] = {"2020": "fifo"}
+                want: Dict[int, str] = {2020: "fifo"}
+                self.assertEqual(self._test_config(config, country).years_2_accounting_method_names, want)
+        # An unknown name is reported at once, with the valid values.
+        config[Keyword.ACCOUNTING_METHODS.value] = {"2020": "fifi"}
+        with self.assertRaisesRegex(
+            RP2ValueError, "invalid accounting method 'fifi' for 2020 in section 'accounting_methods': valid values for country 'us' are fifo, hifo, lifo, lofo"
+        ):
+            self._test_config(config)
+        # All four US methods are still accepted, in the order of the file.
+        config[Keyword.ACCOUNTING_METHODS.value] = {"2024": "lofo", "2020": "fifo", "2021": "lifo", "2022": "hifo"}
+        want_us: Dict[int, str] = {2024: "lofo", 2020: "fifo", 2021: "lifo", 2022: "hifo"}
+        self.assertEqual(self._test_config(config).years_2_accounting_method_names, want_us)
+        # rp2_es with "2010 = hifo" stops before computing anything and writes no report (it used to write HIFO reports).
+        config[Keyword.ACCOUNTING_METHODS.value] = {"2010": "hifo"}
+        with TemporaryDirectory() as directory:
+            config_path = os.path.join(directory, "es_hifo.ini")
+            output_path = os.path.join(directory, "output")
+            with open(config_path, "w", encoding="utf-8") as config_file:
+                config.write(config_file)
+            entry_point = "from rp2.plugin.country.es import rp2_entry\nrp2_entry()\n"
+            arguments = [sys.executable, "-c", entry_point, "-n", "-o", output_path, "-p", "es_", config_path, "./input/test_data.ods"]
+            result = subprocess.run(arguments, capture_output=True, text=True, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("invalid accounting method 'hifo' for 2010 in section 'accounting_methods'", result.stdout + result.stderr)
+            self.assertEqual(os.listdir(output_path) if os.path.exists(output_path) else [], [])
 
     def test_creation(self) -> None:
         with self.assertRaisesRegex(RP2TypeError, "Parameter 'country' is not of type AbstractCountry: .*"):
