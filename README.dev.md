@@ -268,6 +268,7 @@ class Generator(AbstractReportGenerator):
   * `generation_language`: language to use for generation. This is a hint and, depending on the nature of the plugin it can be used or ignored: e.g.
     * the tax_report_us plugin ignores `generation_language` because it generates a 8849-sytle report that has no use outside the US (so only English is used)
     * the rp2_full_report plugin uses `generation_language` because it generates a generic report that can be useful in any country (so it has to be localization-friendly)
+* if the generator derives from `AbstractODSGenerator`, it writes cells with `_fill_cell()`. Only a `Formula` (from [abstract_ods_generator.py](src/rp2/plugin/report/abstract_ods_generator.py)) is written as a formula: `_fill_cell(sheet, 3, 4, Formula("=SUM(E4:E9)"))`. Any other value is written as it is, so text from the input stays text, even if it starts with `=` (e.g. a note `=1+1` shows `=1+1`, not 2).
 
 Report plugin output can be localized in many languages (see the [Localization](#localization) section for more on this): for an example of a localization-aware plugin see [rp2_full_report](src/rp2/plugin/report/rp2_full_report.py).
 

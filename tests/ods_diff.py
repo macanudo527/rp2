@@ -19,7 +19,7 @@ from difflib import unified_diff
 from itertools import zip_longest
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import Any, List, NamedTuple, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 from xml.etree import ElementTree
 
 import ezodf
@@ -120,6 +120,70 @@ def read_sheet_cells(file_path: Path, sheet_name: str) -> Optional[List[List[Rep
 
 
 _TABLE_NAMESPACE: str = "urn:oasis:names:tc:opendocument:xmlns:table:1.0"
+_TEXT_NAMESPACE: str = "urn:oasis:names:tc:opendocument:xmlns:text:1.0"
+
+
+# A cell of an ODS file, as its XML (content.xml) has it: sheet, address (e.g. G4), formula (None if the cell isn't a formula) and text.
+class ODSCell(NamedTuple):
+    sheet: str
+    address: str
+    formula: Optional[str]
+    text: str
+
+
+# The text of an element of a cell: text:s is one or more spaces (text:c of them), text:tab a tab, text:line-break a new line.
+def _get_xml_text(element: ElementTree.Element) -> str:
+    parts: List[str] = [element.text or ""]
+    for child in element:
+        if child.tag == f"{{{_TEXT_NAMESPACE}}}s":
+            parts.append(" " * int(child.get(f"{{{_TEXT_NAMESPACE}}}c", "1")))
+        elif child.tag == f"{{{_TEXT_NAMESPACE}}}tab":
+            parts.append("\t")
+        elif child.tag == f"{{{_TEXT_NAMESPACE}}}line-break":
+            parts.append("\n")
+        else:
+            parts.append(_get_xml_text(child))
+        parts.append(child.tail or "")
+    return "".join(parts)
+
+
+# Every cell of an ODS file that has a formula or text, read from the XML of the file (not with ezodf, which writes the reports). The text of
+# a cell is its paragraphs, one per line. Example: a note "=1+1" written as text is ODSCell("B1 In-Out", "P4", None, "=1+1"), the same note
+# written as a formula is ODSCell("B1 In-Out", "P4", "=1+1", "").
+def read_cells(file_path: Path) -> List[ODSCell]:
+    with zipfile.ZipFile(file_path) as ods_file:
+        content: ElementTree.Element = ElementTree.fromstring(ods_file.read("content.xml"))
+    result: List[ODSCell] = []
+    for table in content.iter(f"{{{_TABLE_NAMESPACE}}}table"):
+        sheet: str = table.get(f"{{{_TABLE_NAMESPACE}}}name", "")
+        row_number: int = 1
+        for row in table.iter(f"{{{_TABLE_NAMESPACE}}}table-row"):
+            column_index: int = 0
+            for cell in row:
+                formula: Optional[str] = cell.get(f"{{{_TABLE_NAMESPACE}}}formula")
+                text: str = "\n".join(_get_xml_text(paragraph) for paragraph in cell.iter(f"{{{_TEXT_NAMESPACE}}}p"))
+                if formula is not None or text:
+                    result.append(ODSCell(sheet, f"{_get_column_name(column_index)}{row_number}", formula, text))
+                column_index += int(cell.get(f"{{{_TABLE_NAMESPACE}}}number-columns-repeated", "1"))
+            row_number += int(row.get(f"{{{_TABLE_NAMESPACE}}}number-rows-repeated", "1"))
+    return result
+
+
+# Writes an RP2 input file: one sheet for each asset, with the given rows (an empty string leaves the cell empty). A sheet keeps its name
+# as it is, also with quotes (e.g. B'1"x): ezodf would replace them with spaces, but LibreOffice, where users write their input, allows them.
+def write_ods_input(file_path: Path, asset_2_rows: Dict[str, List[List[Any]]]) -> None:
+    document: Any = ezodf.newdoc("ods", str(file_path), template=None)
+    for asset, rows in asset_2_rows.items():
+        sheet: Any = ezodf.Table("asset")
+        document.sheets += sheet
+        sheet.reset(size=(len(rows), max(len(row) for row in rows)))
+        # After reset(), which sets the name again through ezodf's setter.
+        sheet.set_attr(f"{{{_TABLE_NAMESPACE}}}name", asset)
+        for row_index, row in enumerate(rows):
+            for column_index, value in enumerate(row):
+                if value != "":
+                    sheet[row_index, column_index].set_value(value)
+    document.save()
 
 
 # Why a formula isn't well formed, or None if it is: every parenthesis must be opened before it is closed and closed before the formula ends,

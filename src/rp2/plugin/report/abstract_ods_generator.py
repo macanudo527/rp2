@@ -15,7 +15,7 @@
 import os
 from datetime import date
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, NamedTuple, Optional, Set
 
 import ezodf
 
@@ -32,6 +32,13 @@ from rp2.localization import _
 from rp2.out_transaction import OutTransaction
 from rp2.rp2_decimal import RP2Decimal
 from rp2.rp2_error import RP2RuntimeError, RP2TypeError
+
+
+# A formula that a report generator builds, e.g. Formula("=SUM(E4:E9)"). AbstractODSGenerator._fill_cell() writes a Formula as a formula and
+# any other value as it is: text from the input (an ID, a note, a holder...) stays text even if it starts with "=". Example: the note "=1+1"
+# shows "=1+1", not 2, and a note like =WEBSERVICE("https://...") is never evaluated.
+class Formula(NamedTuple):
+    text: str
 
 
 class AbstractODSGenerator(AbstractReportGenerator):
@@ -190,18 +197,15 @@ class AbstractODSGenerator(AbstractReportGenerator):
         Configuration.type_check_string("visual_style", visual_style)
         Configuration.type_check_string("data_style", data_style)
 
-        is_formula: bool = False
-        if isinstance(value, str) and value and value[0] == "=":
-            # If the value starts with '=' it is assumed to be a formula
-            is_formula = True
-
         style_name: str = f"{visual_style}_{data_style}"
-        if isinstance(value, RP2Decimal):
-            # The ezodf API doesn't accept RP2Decimal, so we are forced to cast to float before writing to the spreadsheet
-            value = float(value)
-        if is_formula:
-            sheet[row_index, column_index].formula = value
+        if isinstance(value, Formula):
+            # Only formulas that a report generator builds are written as formulas (see Formula).
+            sheet[row_index, column_index].formula = value.text
         else:
+            if isinstance(value, RP2Decimal):
+                # The ezodf API doesn't accept RP2Decimal, so we are forced to cast to float before writing to the spreadsheet
+                value = float(value)
+            # Any other value is written as it is: text stays text, even if it starts with "=" (e.g. a note "=1+1" from the input).
             sheet[row_index, column_index].set_value(value)
         if apply_style:
             cls._apply_style_to_cell(sheet=sheet, row_index=row_index, column_index=column_index, style_name=style_name)
