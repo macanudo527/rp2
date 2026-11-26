@@ -228,6 +228,33 @@ class TestReportInputText(unittest.TestCase):
                 no_texts: Set[str] = set()
                 self.assertEqual(want_texts - texts, no_texts)
 
+    # The holder totals of the Open Positions reports compare the holders as they are: each total sums the rows whose holder is the one in its
+    # own row, so no holder name is in a formula. With SUMIF the name was a criterion: in LibreOffice 24.2 the total of Bob* also counted
+    # Bobby's rows ($110 instead of $50), the one of >0 was $0 ("greater than 0") and the one of A"B was an error (Err:508).
+    def test_holder_totals(self) -> None:
+        holders: List[str] = sorted(['A"B', ">0", "Bob*", "Bobby"])
+        for report in ("us_fifo_open_positions.ods", "jp_fifo_open_positions.ods", "ie_fifo_open_positions.ods"):
+            for sheet, columns in (("Asset", "EHI"), ("Asset - Exchange", "FIJ")):
+                with self.subTest(report=report, sheet=sheet):
+                    address_2_cell: Dict[str, ODSCell] = {cell.address: cell for cell in self.report_2_cells[report] if cell.sheet == sheet}
+                    total_rows: List[int] = sorted(int(address[1:]) for address, cell in address_2_cell.items() if address[0] == "A" and cell.text == "Total")
+                    total_holders: List[str] = sorted(address_2_cell[f"B{row}"].text for row in total_rows)
+                    self.assertEqual(total_holders, holders)
+                    # The data rows start after the 3 header rows and end before the total rows.
+                    last_data_row: int = total_rows[0] - 1
+                    for row in total_rows:
+                        for column in columns:
+                            self.assertEqual(
+                                address_2_cell[f"{column}{row}"].formula, f"=SUMPRODUCT((B$4:B${last_data_row}=B{row})*{column}$4:{column}${last_data_row})"
+                            )
+                    holder_formulas: List[str] = [
+                        f"{address}: {cell.formula}"
+                        for address, cell in address_2_cell.items()
+                        if cell.formula and any(f'"{holder}' in cell.formula for holder in holders)
+                    ]
+                    no_formulas: List[str] = []
+                    self.assertEqual(holder_formulas, no_formulas)
+
 
 if __name__ == "__main__":
     unittest.main()

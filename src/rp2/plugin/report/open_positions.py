@@ -425,7 +425,7 @@ class Generator(AbstractODSGenerator):
                     asset_sheet,
                     asset_row_index,
                     4,
-                    Formula(f'=SUMIF(B${self.HEADER_ROWS+1}:B${last_data_index};"{holder}";E${self.HEADER_ROWS+1}:E${last_data_index})'),
+                    self._get_holder_total_formula("E", last_data_index, asset_row_index),
                     visual_style="bold_border",
                     data_style="fiat",
                 )
@@ -435,7 +435,7 @@ class Generator(AbstractODSGenerator):
                     asset_sheet,
                     asset_row_index,
                     7,
-                    Formula(f'=SUMIF(B${self.HEADER_ROWS+1}:B${last_data_index};"{holder}";H${self.HEADER_ROWS+1}:H${last_data_index})'),
+                    self._get_holder_total_formula("H", last_data_index, asset_row_index),
                     visual_style="bold_border",
                     data_style="fiat",
                 )
@@ -443,7 +443,7 @@ class Generator(AbstractODSGenerator):
                     asset_sheet,
                     asset_row_index,
                     8,
-                    Formula(f'=SUMIF(B${self.HEADER_ROWS+1}:B${last_data_index};"{holder}";I${self.HEADER_ROWS+1}:I${last_data_index})'),
+                    self._get_holder_total_formula("I", last_data_index, asset_row_index),
                     visual_style="bold_border",
                     data_style="fiat",
                 )
@@ -504,7 +504,7 @@ class Generator(AbstractODSGenerator):
                     asset_exchange_sheet,
                     asset_exchange_row_index,
                     5,
-                    Formula(f'=SUMIF(B${self.HEADER_ROWS+1}:B${last_data_index};"{holder}";F${self.HEADER_ROWS+1}:F${last_data_index})'),
+                    self._get_holder_total_formula("F", last_data_index, asset_exchange_row_index),
                     visual_style="bold_border",
                     data_style="fiat",
                 )
@@ -514,7 +514,7 @@ class Generator(AbstractODSGenerator):
                     asset_exchange_sheet,
                     asset_exchange_row_index,
                     8,
-                    Formula(f'=SUMIF(B${self.HEADER_ROWS+1}:B${last_data_index};"{holder}";I${self.HEADER_ROWS+1}:I${last_data_index})'),
+                    self._get_holder_total_formula("I", last_data_index, asset_exchange_row_index),
                     visual_style="bold_border",
                     data_style="fiat",
                 )
@@ -522,7 +522,7 @@ class Generator(AbstractODSGenerator):
                     asset_exchange_sheet,
                     asset_exchange_row_index,
                     9,
-                    Formula(f'=SUMIF(B${self.HEADER_ROWS+1}:B${last_data_index};"{holder}";J${self.HEADER_ROWS+1}:J${last_data_index})'),
+                    self._get_holder_total_formula("J", last_data_index, asset_exchange_row_index),
                     visual_style="bold_border",
                     data_style="fiat",
                 )
@@ -612,6 +612,14 @@ class Generator(AbstractODSGenerator):
     def _get_price_formula(row_index: int) -> Formula:
         price_lookup: str = f"VLOOKUP(A{row_index + 1};${_('Input')}.A:B;2;0)"
         return Formula(f'=IF({price_lookup}="{_INPUT_VALUE_STRING}";"{_REPORT_INPUT_VALUE_STRING}";{price_lookup})')
+
+    # The total of a column for the holder of a total row (row_index is 0-based): the sum of the column over the data rows (from the first data
+    # row to last_data_row, 1-based) whose holder (column B) is the holder in column B of the total row. The holders are compared as they are:
+    # with SUMIF the holder name was a criterion, so Bob* also counted Bobby's rows, >0 counted no row (it means "greater than 0") and a quote
+    # (A"B) broke the formula. Example, for column E, data rows 4 to 8 and the total row 9: =SUMPRODUCT((B$4:B$8=B9)*E$4:E$8).
+    def _get_holder_total_formula(self, column: str, last_data_row: int, row_index: int) -> Formula:
+        first_data_row: int = self.HEADER_ROWS + 1
+        return Formula(f"=SUMPRODUCT((B${first_data_row}:B${last_data_row}=B{row_index + 1})*{column}${first_data_row}:{column}${last_data_row})")
 
     # Per-wallet application: collects balances and actual cost basis by holder and exchange from the lots the wallets hold at to_date
     # (see ComputedData.wallet_lots) and returns the asset's cost basis (it's in asset_cost_bases only if positive, like in universal
