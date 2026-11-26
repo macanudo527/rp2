@@ -33,7 +33,7 @@ from rp2.intra_transaction import IntraTransaction
 from rp2.localization import _
 from rp2.logger import create_logger
 from rp2.out_transaction import OutTransaction
-from rp2.plugin.report.abstract_ods_generator import AbstractODSGenerator, Formula
+from rp2.plugin.report.abstract_ods_generator import AbstractODSGenerator, get_row_hyperlink, get_sheet_name
 from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2TypeError
 from rp2.transaction_set import TransactionSet
@@ -486,11 +486,11 @@ class Generator(AbstractODSGenerator):
 
     @staticmethod
     def get_in_out_sheet_name(asset: str) -> str:
-        return _("{} In-Out").format(asset)
+        return get_sheet_name(_("{} In-Out").format(asset))
 
     @staticmethod
     def get_tax_sheet_name(asset: str) -> str:
-        return _("{} Tax").format(asset)
+        return get_sheet_name(_("{} Tax").format(asset))
 
     def __get_number_of_rows_in_transaction_sheet(self, computed_data: ComputedData) -> int:
         return self.MIN_ROWS + computed_data.in_transaction_set.count + computed_data.out_transaction_set.count + computed_data.intra_transaction_set.count
@@ -791,15 +791,11 @@ class Generator(AbstractODSGenerator):
         if not row:
             # This may occur if command line time filters are activated
             return value
-        if isinstance(value, (RP2Decimal, int, float)):
-            return Formula(f'=HYPERLINK("#{self.get_in_out_sheet_name(transaction.asset)}.a{row}:z{row}"; {value})')
-        return Formula(f'=HYPERLINK("#{self.get_in_out_sheet_name(transaction.asset)}.a{row}:z{row}"; "{value}")')
+        return get_row_hyperlink(self.get_in_out_sheet_name(transaction.asset), row, value)
 
     def __get_hyperlinked_summary_value(self, asset: str, value: Any, year: int) -> Any:
         row: int = self.__tax_sheet_year_2_row[_AssetAndYear(asset, year)]
-        if isinstance(value, (RP2Decimal, int, float)):
-            return Formula(f'=HYPERLINK("#{self.get_tax_sheet_name(asset)}.a{row}:z{row}"; {value})')
-        return Formula(f'=HYPERLINK("#{self.get_tax_sheet_name(asset)}.a{row}:z{row}"; "{value}")')
+        return get_row_hyperlink(self.get_tax_sheet_name(asset), row, value)
 
     def __get_in_out_sheet_row(self, transaction: AbstractTransaction) -> Optional[int]:
         if transaction not in self.__in_out_sheet_transaction_2_row:

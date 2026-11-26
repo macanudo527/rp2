@@ -41,6 +41,40 @@ class Formula(NamedTuple):
     text: str
 
 
+# The name that a sheet has in a report. ezodf, which writes the reports, replaces tabs, carriage returns and quotes with spaces in sheet
+# names and removes the spaces at both ends: e.g. the In-Out sheet of the asset B'1"x is "B 1 x In-Out". Formulas and links that refer to a
+# sheet must use this name.
+def get_sheet_name(name: str) -> str:
+    for character in "\t\r'\"":
+        name = name.replace(character, " ")
+    return name.strip()
+
+
+# Text in a formula: in double quotes, with each double quote of the text doubled. Example: the ID buy"id;1 is "buy""id;1".
+def get_formula_string(text: str) -> str:
+    return '"' + text.replace('"', '""') + '"'
+
+
+# A sheet in a formula: its name in single quotes, with each single quote of the name doubled. Example: B1_2024 is 'B1_2024'.
+def get_sheet_reference(sheet_name: str) -> str:
+    return "'" + sheet_name.replace("'", "''") + "'"
+
+
+# The target of a link to a row of a sheet (row is 1-based): its cells from column A to Z. Example: #B1 In-Out.a4:z4 for row 4 of B1 In-Out.
+# A sheet name with characters other than letters, digits, spaces, "-" and "_" is in quotes: LibreOffice doesn't find B.1 In-Out.a4:z4 but
+# finds 'B.1 In-Out'.a4:z4.
+def get_row_link_target(sheet_name: str, row: int) -> str:
+    is_plain_name: bool = all(character.isalnum() or character in " -_" for character in sheet_name)
+    return f"#{sheet_name if is_plain_name else get_sheet_reference(sheet_name)}.a{row}:z{row}"
+
+
+# A link to a row of a sheet (see get_row_link_target()) that shows a value: a number, or text in quotes (see get_formula_string()).
+# Example, for row 4 of B1 In-Out and the ID buy"id;1: =HYPERLINK("#B1 In-Out.a4:z4"; "buy""id;1").
+def get_row_hyperlink(sheet_name: str, row: int, value: Any) -> Formula:
+    shown_value: str = f"{value}" if isinstance(value, (RP2Decimal, int, float)) else get_formula_string(f"{value}")
+    return Formula(f"=HYPERLINK({get_formula_string(get_row_link_target(sheet_name, row))}; {shown_value})")
+
+
 class AbstractODSGenerator(AbstractReportGenerator):
     @classmethod
     def _initialize_output_file(  # pylint: disable=too-many-branches

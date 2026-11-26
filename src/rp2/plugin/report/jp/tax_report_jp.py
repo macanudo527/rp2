@@ -29,7 +29,7 @@ from rp2.intra_transaction import IntraTransaction
 from rp2.localization import _
 from rp2.logger import create_logger
 from rp2.out_transaction import OutTransaction
-from rp2.plugin.report.abstract_ods_generator import AbstractODSGenerator, Formula
+from rp2.plugin.report.abstract_ods_generator import AbstractODSGenerator, Formula, get_sheet_name, get_sheet_reference
 from rp2.rp2_decimal import ZERO, RP2Decimal
 from rp2.rp2_error import RP2RuntimeError, RP2TypeError
 from rp2.transaction_set import TransactionSet
@@ -156,7 +156,7 @@ class Generator(AbstractODSGenerator):
 
     @staticmethod
     def get_tax_sheet_name(asset: str, year: int) -> str:
-        return _("{}_{}").format(asset, year)
+        return get_sheet_name(_("{}_{}").format(asset, year))
 
     @staticmethod
     def get_summary_sheet_name(year: int) -> str:
@@ -348,8 +348,8 @@ class Generator(AbstractODSGenerator):
         previous_year_yen_cell: Optional[Formula] = None
         if previous_year_row_offset != 0:
             previous_year_sheet_name: str = self.get_tax_sheet_name(asset, year - 1)
-            previous_year_crypto_cell = Formula(f"='{previous_year_sheet_name}'.I{previous_year_row_offset}")
-            previous_year_yen_cell = Formula(f"='{previous_year_sheet_name}'.I{previous_year_row_offset+1}")
+            previous_year_crypto_cell = Formula(f"={get_sheet_reference(previous_year_sheet_name)}.I{previous_year_row_offset}")
+            previous_year_yen_cell = Formula(f"={get_sheet_reference(previous_year_sheet_name)}.I{previous_year_row_offset+1}")
 
         self._fill_cell(
             asset_year_sheet,
@@ -429,19 +429,35 @@ class Generator(AbstractODSGenerator):
         self._fill_cell(year_summary_sheet, self.__year_row_offset[year], 2, total_gifts, apply_style=False)
         # Formula for Avg. Unit Price
         self._fill_cell(
-            year_summary_sheet, self.__year_row_offset[year], 3, Formula(f"='{self.get_tax_sheet_name(asset, year)}'.G{row_index+10}"), apply_style=False
+            year_summary_sheet,
+            self.__year_row_offset[year],
+            3,
+            Formula(f"={get_sheet_reference(self.get_tax_sheet_name(asset, year))}.G{row_index+10}"),
+            apply_style=False,
         )
         # Formula for End Balance Crypto
         self._fill_cell(
-            year_summary_sheet, self.__year_row_offset[year], 4, Formula(f"='{self.get_tax_sheet_name(asset, year)}'.I{row_index+9}"), apply_style=False
+            year_summary_sheet,
+            self.__year_row_offset[year],
+            4,
+            Formula(f"={get_sheet_reference(self.get_tax_sheet_name(asset, year))}.I{row_index+9}"),
+            apply_style=False,
         )
         # Formula for End Balance Yen
         self._fill_cell(
-            year_summary_sheet, self.__year_row_offset[year], 5, Formula(f"='{self.get_tax_sheet_name(asset, year)}'.I{row_index+10}"), apply_style=False
+            year_summary_sheet,
+            self.__year_row_offset[year],
+            5,
+            Formula(f"={get_sheet_reference(self.get_tax_sheet_name(asset, year))}.I{row_index+10}"),
+            apply_style=False,
         )
         # Formula for Net Income Amt
         self._fill_cell(
-            year_summary_sheet, self.__year_row_offset[year], 6, Formula(f"='{self.get_tax_sheet_name(asset, year)}'.I{row_index+18}"), apply_style=False
+            year_summary_sheet,
+            self.__year_row_offset[year],
+            6,
+            Formula(f"={get_sheet_reference(self.get_tax_sheet_name(asset, year))}.I{row_index+18}"),
+            apply_style=False,
         )
 
         self.__year_row_offset[year] += 1

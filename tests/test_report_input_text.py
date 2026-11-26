@@ -25,7 +25,19 @@ from pathlib import Path
 from subprocess import run
 from typing import Dict, List, Set, Union
 
-from ods_diff import ODSCell, read_cells, write_ods_input
+from ods_diff import (
+    ODSCell,
+    RowHyperlink,
+    get_ezodf_sheet_name,
+    get_malformed_formulas,
+    get_quoted_sheet_references,
+    parse_row_hyperlink,
+    read_cells,
+    write_ods_input,
+)
+
+from rp2.plugin.report.abstract_ods_generator import get_formula_string, get_row_hyperlink, get_row_link_target, get_sheet_name, get_sheet_reference
+from rp2.rp2_decimal import RP2Decimal
 
 ROOT_PATH: Path = Path(os.path.dirname(__file__)).parent.absolute()
 
@@ -125,18 +137,20 @@ _INTRA_HEADER: List[Union[str, float]] = [
     "Notes",
 ]
 # A"B buys 3 coins of B'1"x on =Ex in 2024 (one wallet: the opening allocation at the switch to per-wallet application is automatic), then
-# moves 1 to Bob*, 0.5 to Bobby and 0.5 to >0 on Kraken, and Bob* sells 0.5. Bobby also holds 1 B2. At the end: A"B 1, Bob* 0.5, Bobby 0.5
-# and >0 0.5 B'1"x.
+# moves 1 to Bob*, 0.5 to Bobby and 0.5 to >0 on Kraken; Bob* and A"B sell 0.5 each. Both sales take coins of the lot buy"id;1 too (FIFO):
+# with universal application the second sale does, with per-wallet application A"B's sale and the 1 coin moved to Bob*. Bobby also holds
+# 1 B2. At the end: A"B, Bob*, Bobby and >0 hold 0.5 B'1"x each.
 _ASSET_2_ROWS: Dict[str, List[List[Union[str, float]]]] = {
     _ASSET: [
         ["IN"],
         _IN_HEADER,
-        ["2024-01-10T15:00Z", "=Ex", 'A"B', "", "", "Buy", _ASSET, 2.0, 100.0, "", "", 0.0, "=2+2", "=1+1"],
-        ["2024-02-10T15:00Z", "=Ex", 'A"B', "", "", "Buy", _ASSET, 1.0, 200.0, "", "", 0.0, 'buy"id;1', '=HYPERLINK("https://example.com/";"click")'],
+        ["2024-01-10T15:00Z", "=Ex", 'A"B', "", "", "Buy", _ASSET, 0.75, 100.0, "", "", 0.0, "=2+2", "=1+1"],
+        ["2024-02-10T15:00Z", "=Ex", 'A"B', "", "", "Buy", _ASSET, 2.25, 200.0, "", "", 0.0, 'buy"id;1', '=HYPERLINK("https://example.com/";"click")'],
         ["TABLE END"],
         ["OUT"],
         _OUT_HEADER,
         ["2025-06-01T15:00Z", "Kraken", "Bob*", "", "", "Sell", _ASSET, 0.5, 300.0, 0.0, "", "", "sell'id", "=SUM(1;2)"],
+        ["2025-07-01T15:00Z", "=Ex", 'A"B', "", "", "Sell", _ASSET, 0.5, 310.0, 0.0, "", "", 'sell"2', ""],
         ["TABLE END"],
         ["INTRA"],
         _INTRA_HEADER,
@@ -154,8 +168,52 @@ _ASSET_2_ROWS: Dict[str, List[List[Union[str, float]]]] = {
 }
 
 
+# The functions that put text and sheet names in formulas.
+class TestFormulaText(unittest.TestCase):
+    def test_formula_string(self) -> None:
+        cases: Dict[str, str] = {"plain": '"plain"', 'buy"id;1': '"buy""id;1"', '""': '""""""', "": '""', "=1+1": '"=1+1"'}
+        for text, want in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(get_formula_string(text), want)
+
+    def test_sheet_reference(self) -> None:
+        self.assertEqual(get_sheet_reference("B1_2024"), "'B1_2024'")
+        self.assertEqual(get_sheet_reference("B'1_2024"), "'B''1_2024'")
+
+    # Plain sheet names stay as they are (as in RP2 1.7.2), other ones are in quotes.
+    def test_row_link_target(self) -> None:
+        cases: Dict[str, str] = {
+            "B1 In-Out": "#B1 In-Out.a4:z4",
+            "__test_B1 In-Out": "#__test_B1 In-Out.a4:z4",
+            "ビットコイン Tax": "#ビットコイン Tax.a4:z4",
+            "B.1 In-Out": "#'B.1 In-Out'.a4:z4",
+            "B$1 Tax": "#'B$1 Tax'.a4:z4",
+        }
+        for sheet_name, want in cases.items():
+            with self.subTest(sheet_name=sheet_name):
+                self.assertEqual(get_row_link_target(sheet_name, 4), want)
+
+    def test_row_hyperlink(self) -> None:
+        self.assertEqual(get_row_hyperlink("B1 In-Out", 4, 'buy"id;1').text, '=HYPERLINK("#B1 In-Out.a4:z4"; "buy""id;1")')
+        self.assertEqual(get_row_hyperlink("B1 In-Out", 4, RP2Decimal("0.5")).text, '=HYPERLINK("#B1 In-Out.a4:z4"; 0.5)')
+        self.assertEqual(get_row_hyperlink("B.1 In-Out", 4, "x").text, '=HYPERLINK("#\'B.1 In-Out\'.a4:z4"; "x")')
+        # The test helper reads the links back as they were written.
+        for sheet_name in ("B1 In-Out", "B.1 In-Out", "B$1 Tax"):
+            for value in ('buy"id;1', "sell'id", "=2+2", "a;b)"):
+                with self.subTest(sheet_name=sheet_name, value=value):
+                    want: RowHyperlink = RowHyperlink(sheet_name, 4, value)
+                    self.assertEqual(parse_row_hyperlink(get_row_hyperlink(sheet_name, 4, value).text), want)
+
+    # get_sheet_name() gives a sheet the name that ezodf gives it.
+    def test_sheet_name(self) -> None:
+        for name in ("B'1\"x In-Out", "B1 In-Out", "\tB1\r Tax", " B1 ", "a\"b'c_2024"):
+            with self.subTest(name=name):
+                self.assertEqual(get_sheet_name(name), get_ezodf_sheet_name(name))
+
+
 class TestReportInputText(unittest.TestCase):
     output_dir: Path
+    report_2_path: Dict[str, Path]
     report_2_cells: Dict[str, List[ODSCell]]
 
     @classmethod
@@ -185,7 +243,8 @@ class TestReportInputText(unittest.TestCase):
                 ],
                 check=True,
             )
-        cls.report_2_cells = {path.name: read_cells(path) for path in sorted(cls.output_dir.glob("*/*.ods"))}
+        cls.report_2_path = {path.name: path for path in sorted(cls.output_dir.glob("*/*.ods"))}
+        cls.report_2_cells = {report: read_cells(path) for report, path in cls.report_2_path.items()}
 
     def test_reports(self) -> None:
         want: List[str] = [
@@ -229,8 +288,9 @@ class TestReportInputText(unittest.TestCase):
                 self.assertEqual(want_texts - texts, no_texts)
 
     # The holder totals of the Open Positions reports compare the holders as they are: each total sums the rows whose holder is the one in its
-    # own row, so no holder name is in a formula. With SUMIF the name was a criterion: in LibreOffice 24.2 the total of Bob* also counted
-    # Bobby's rows ($110 instead of $50), the one of >0 was $0 ("greater than 0") and the one of A"B was an error (Err:508).
+    # own row, so no holder name is in a formula. With SUMIF the name was a criterion: in LibreOffice 24.2 the cost basis total of Bob* also
+    # counted Bobby's rows ($185 instead of $75), the one of >0 was $0 instead of $100 ("greater than 0") and the one of A"B was an error
+    # (Err:508).
     def test_holder_totals(self) -> None:
         holders: List[str] = sorted(['A"B', ">0", "Bob*", "Bobby"])
         for report in ("us_fifo_open_positions.ods", "jp_fifo_open_positions.ods", "ie_fifo_open_positions.ods"):
@@ -254,6 +314,51 @@ class TestReportInputText(unittest.TestCase):
                     ]
                     no_formulas: List[str] = []
                     self.assertEqual(holder_formulas, no_formulas)
+
+    # Every formula of every report is well formed: text from the input in a formula (an ID shown by a link, a sheet name) is in quotes, with
+    # its quotes doubled. Before, e.g. the link of the lot buy"id;1 was =HYPERLINK("#B'1"x Tax.a8:z8"; "buy"id;1"), whose strings don't close.
+    def test_formulas_are_well_formed(self) -> None:
+        for report, path in self.report_2_path.items():
+            with self.subTest(report=report):
+                no_formulas: List[str] = []
+                self.assertEqual(get_malformed_formulas(path), no_formulas)
+
+    # The links of the full reports go to sheets of the report, by the names that the sheets have: ezodf names the sheets of B'1"x "B 1 x
+    # In-Out" and "B 1 x Tax". They show the IDs of the input as they are. Before, the links went to "B'1"x In-Out", which isn't a sheet.
+    def test_links(self) -> None:
+        for report in ("us_fifo_rp2_full_report.ods", "jp_fifo_rp2_full_report.ods", "ie_fifo_rp2_full_report.ods"):
+            with self.subTest(report=report):
+                cells: List[ODSCell] = self.report_2_cells[report]
+                sheets: Set[str] = {cell.sheet for cell in cells}
+                self.assertIn("B 1 x In-Out", sheets)
+                link_formulas: List[str] = [cell.formula for cell in cells if cell.formula and cell.formula.startswith("=HYPERLINK(")]
+                self.assertTrue(link_formulas)
+                bad_links: List[str] = []
+                texts: Set[str] = set()
+                for formula in link_formulas:
+                    link = parse_row_hyperlink(formula)
+                    if link is None or link.sheet not in sheets:
+                        bad_links.append(formula)
+                    else:
+                        texts.add(link.text)
+                no_links: List[str] = []
+                self.assertEqual(bad_links, no_links)
+                want_texts: Set[str] = {"=2+2", 'buy"id;1', "sell'id", 'sell"2'}
+                no_texts: Set[str] = set()
+                self.assertEqual(want_texts - texts, no_texts)
+
+    # The formulas of the JP tax report that refer to another sheet name a sheet of the report, as ezodf names it (e.g. B 1 x_2024 for the
+    # asset B'1"x). Before, they named 'B'1"x_2024', which isn't a sheet and doesn't close its quotes.
+    def test_sheet_references(self) -> None:
+        cells: List[ODSCell] = self.report_2_cells["jp_fifo_tax_report_jp.ods"]
+        sheets: Set[str] = {cell.sheet for cell in cells}
+        references: Set[str] = set()
+        for cell in cells:
+            if cell.formula:
+                references.update(get_quoted_sheet_references(cell.formula))
+        self.assertIn("B 1 x_2024", references)
+        no_references: Set[str] = set()
+        self.assertEqual(references - sheets, no_references)
 
 
 if __name__ == "__main__":

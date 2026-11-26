@@ -29,8 +29,10 @@ from rp2.rp2_decimal import CRYPTO_DECIMALS
 _PURGE_HYPERLIKS = True
 # Marks the formula cells in the text that ods_diff() compares (see _row_as_string()).
 _FORMULA_MARKER = "ƒ"
-# A hyperlink to a row of a sheet, as the reports write it: =HYPERLINK("#B1 In-Out.a4:z4"; "1") or =HYPERLINK("#B1 In-Out.a4:z4"; 0.5).
-_ROW_HYPERLINK = re.compile(r'^=HYPERLINK\("#(?P<sheet>[^"]+)\.a(?P<row>\d+):z(?P=row)"; *(?P<text>.*)\)$')
+# A hyperlink to a row of a sheet, as the reports write it (see get_row_hyperlink() in abstract_ods_generator.py): =HYPERLINK("#B1 In-Out.a4:z4";
+# "1"), =HYPERLINK("#B1 In-Out.a4:z4"; 0.5) or, with a quoted sheet name and a quote in the text, =HYPERLINK("#'B.1 In-Out'.a4:z4"; "a""b").
+_ROW_HYPERLINK = re.compile(r'^=HYPERLINK\("(?P<target>(?:[^"]|"")*)"; *(?P<text>"(?:[^"]|"")*"|[^";]*)\)$')
+_ROW_LINK_TARGET = re.compile(r"^#(?P<sheet>'(?:[^']|'')*'|[^']*?)\.a(?P<row>\d+):z(?P=row)$")
 
 
 # A cell of a report: its text and, if it's a hyperlink to a row of a sheet, that sheet and row (1-based, as in the formula).
@@ -38,6 +40,43 @@ class ReportCell(NamedTuple):
     text: str
     link_sheet: Optional[str] = None
     link_row: Optional[int] = None
+
+
+# A hyperlink to a row of a sheet: the sheet, the row (1-based, as in the formula) and the text that it shows (without the quotes of the formula).
+class RowHyperlink(NamedTuple):
+    sheet: str
+    row: int
+    text: str
+
+
+# A hyperlink to a row of a sheet (see _ROW_HYPERLINK), or None if the formula isn't one. Example: =HYPERLINK("#'B.1 In-Out'.a4:z4";
+# "buy""id;1") is RowHyperlink("B.1 In-Out", 4, 'buy"id;1').
+def parse_row_hyperlink(formula: str) -> Optional[RowHyperlink]:
+    match: Optional[re.Match[str]] = _ROW_HYPERLINK.match(formula)
+    if match is None:
+        return None
+    target: Optional[re.Match[str]] = _ROW_LINK_TARGET.match(match.group("target").replace('""', '"'))
+    if target is None:
+        return None
+    sheet: str = target.group("sheet")
+    if sheet.startswith("'"):
+        sheet = sheet[1:-1].replace("''", "'")
+    text: str = match.group("text")
+    if text.startswith('"'):
+        text = text[1:-1].replace('""', '"')
+    return RowHyperlink(sheet, int(target.group("row")), text)
+
+
+# The sheets that a formula refers to by quoted names (see get_sheet_reference() in abstract_ods_generator.py), without the quotes. Example:
+# ='B1_2024'.G33+'B''2_2024'.G33 refers to B1_2024 and B'2_2024.
+def get_quoted_sheet_references(formula: str) -> List[str]:
+    return [reference.replace("''", "'") for reference in re.findall(r"'((?:[^']|'')*)'\.", formula)]
+
+
+# The name that ezodf gives a sheet (the tests compare it with get_sheet_name() in abstract_ods_generator.py).
+def get_ezodf_sheet_name(name: str) -> str:
+    sheet: Any = ezodf.Table(name)
+    return str(sheet.name)
 
 
 def _row_as_string(row: Any) -> str:
@@ -65,7 +104,8 @@ def _parse_cell_value(cell: Any) -> Any:
     if cell.formula:
         value = cell.formula
         if _PURGE_HYPERLIKS and value.startswith("=HYPERLINK"):
-            value = value.split(";")[1].lstrip(' "').rstrip('")')
+            link: Optional[RowHyperlink] = parse_row_hyperlink(value)
+            value = link.text if link else value.split(";")[1].lstrip(' "').rstrip('")')
     elif cell.value or cell.value == 0:
         value = cell.value
     else:
@@ -110,9 +150,9 @@ def read_sheet_cells(file_path: Path, sheet_name: str) -> Optional[List[List[Rep
     for row in document.sheets[sheet_name].rows():
         cells: List[ReportCell] = []
         for cell in row:
-            match = _ROW_HYPERLINK.match(cell.formula) if cell.formula else None
-            if match:
-                cells.append(ReportCell(match.group("text").strip('"'), match.group("sheet"), int(match.group("row"))))
+            link: Optional[RowHyperlink] = parse_row_hyperlink(cell.formula) if cell.formula else None
+            if link:
+                cells.append(ReportCell(link.text, link.sheet, link.row))
             else:
                 cells.append(ReportCell(str(_parse_cell_value(cell))))
         result.append(cells)
