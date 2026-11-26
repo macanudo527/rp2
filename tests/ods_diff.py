@@ -27,6 +27,8 @@ import ezodf
 from rp2.rp2_decimal import CRYPTO_DECIMALS
 
 _PURGE_HYPERLIKS = True
+# Marks the formula cells in the text that ods_diff() compares (see _row_as_string()).
+_FORMULA_MARKER = "ƒ"
 # A hyperlink to a row of a sheet, as the reports write it: =HYPERLINK("#B1 In-Out.a4:z4"; "1") or =HYPERLINK("#B1 In-Out.a4:z4"; 0.5).
 _ROW_HYPERLINK = re.compile(r'^=HYPERLINK\("#(?P<sheet>[^"]+)\.a(?P<row>\d+):z(?P=row)"; *(?P<text>.*)\)$')
 
@@ -42,7 +44,9 @@ def _row_as_string(row: Any) -> str:
     values: List[str] = []
     cell: Any
     for cell in row:
-        value: Any = str(_parse_cell_value(cell))
+        # A formula cell starts with the marker, so a formula that becomes text, or text that becomes a formula (e.g. a note "=1+1" from the
+        # input), is a difference even when the text is the same.
+        value: Any = f"{_FORMULA_MARKER if cell.formula else ''}{_parse_cell_value(cell)}"
         values.append(value)
 
     # Remove trailing whitespace from row
