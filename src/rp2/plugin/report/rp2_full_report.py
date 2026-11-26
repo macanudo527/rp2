@@ -793,8 +793,14 @@ class Generator(AbstractODSGenerator):
             return value
         return get_row_hyperlink(self.get_in_out_sheet_name(transaction.asset), row, value)
 
+    # A value of a Summary row, linked to the first row of its year in the Gain / Loss Detail table of the asset's Tax sheet. A year can have no
+    # detail row: the Summary has whole years (from the year of the -f date), while the Tax sheet starts at the -f date. Then the value has no
+    # link. Example: buy on 2024-01-10, sell on 2024-03-01 and run with -f 2024-06-01: the Summary has the 2024 gain, the Tax sheet has no
+    # detail row for 2024 (RP2 1.7.2 stopped with a KeyError).
     def __get_hyperlinked_summary_value(self, asset: str, value: Any, year: int) -> Any:
-        row: int = self.__tax_sheet_year_2_row[_AssetAndYear(asset, year)]
+        row: Optional[int] = self.__tax_sheet_year_2_row.get(_AssetAndYear(asset, year))
+        if row is None:
+            return value
         return get_row_hyperlink(self.get_tax_sheet_name(asset), row, value)
 
     def __get_in_out_sheet_row(self, transaction: AbstractTransaction) -> Optional[int]:
