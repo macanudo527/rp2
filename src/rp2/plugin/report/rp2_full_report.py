@@ -916,6 +916,10 @@ class Generator(AbstractODSGenerator):
                 # Example: buy 2 coins on Coinbase (lot i1), send them to Kraken and sell 1: the sale's lot cells link to i1's row.
                 source_lot: InTransaction = gain_loss.acquired_lot.original_lot
                 acquired_lot_note: str = self._get_acquired_lot_description(gain_loss_set, gain_loss)
+                # Acquired Lot Fraction % is the fraction of the original lot, the in-transaction that the cells link to (as the legend says):
+                # selling 1 coin of a wallet's lot t1/-1 (2 coins, moved from i1, a purchase of 5 coins) is 20% of i1. The description names
+                # the wallet's lot (1 of its 2 coins). The amount, fee and cost basis of the coins are the same in both lots.
+                source_lot_fraction: RP2Decimal = gain_loss.crypto_amount / source_lot.crypto_balance_change
                 self._fill_cell(
                     sheet,
                     row_index,
@@ -927,7 +931,7 @@ class Generator(AbstractODSGenerator):
                     sheet,
                     row_index,
                     13,
-                    self.__get_hyperlinked_transaction_value(source_lot, gain_loss.acquired_lot_fraction_percentage),
+                    self.__get_hyperlinked_transaction_value(source_lot, source_lot_fraction),
                     visual_style=acquired_lot_style,
                     data_style="percent",
                 )

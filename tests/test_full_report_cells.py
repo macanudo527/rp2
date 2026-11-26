@@ -23,7 +23,7 @@ from subprocess import CompletedProcess, run
 from typing import Dict, List, NamedTuple, Union
 
 from ods_diff import ReportCell, read_sheet_cells, write_ods_input
-from test_report_input_text import _HEADER_SECTIONS, _IN_HEADER, _OUT_HEADER
+from test_report_input_text import _HEADER_SECTIONS, _IN_HEADER, _INTRA_HEADER, _OUT_HEADER
 
 ROOT_PATH: Path = Path(os.path.dirname(__file__)).parent.absolute()
 
@@ -82,6 +82,41 @@ class TestFullReportCells(unittest.TestCase):
         links: Dict[str, int] = {cell.text: cell.link_row for cells in summary_rows for cell in cells if cell.link_row is not None}
         no_links: Dict[str, int] = {}
         self.assertEqual(links, no_links)
+
+    # With per-wallet application, Acquired Lot Fraction % is the fraction of the original lot, the in-transaction that the lot's cells link
+    # to, as the legend says ("Percentage of the in-transaction"); the description names the wallet's lot. Example: buy 5 coins on Coinbase
+    # (i1), move 2 to Kraken (t1) and sell 1 there: the sale takes 1 coin of Kraken's lot t1/-n, 20% of i1. Before, the fraction was of the
+    # wallet's lot (1 of its 2 coins: 50%), next to a link to i1's row.
+    def test_acquired_lot_fraction_of_the_original_lot(self) -> None:
+        rows: List[List[Union[str, float]]] = [
+            ["IN"],
+            _IN_HEADER,
+            ["2025-01-10T15:00Z", "Coinbase", "Bob", "", "", "Buy", "B1", 5.0, 100.0, "", "", 0.0, "i1", ""],
+            ["TABLE END"],
+            ["OUT"],
+            _OUT_HEADER,
+            ["2025-03-01T15:00Z", "Kraken", "Bob", "", "", "Sell", "B1", 1.0, 200.0, 0.0, "", "", "o1", ""],
+            ["TABLE END"],
+            ["INTRA"],
+            _INTRA_HEADER,
+            ["2025-02-01T15:00Z", "Coinbase", "Bob", "Kraken", "Bob", "", "B1", 2.0, 150.0, "", 2.0, "", "t1", ""],
+            ["TABLE END"],
+        ]
+        run_result = self._run("fraction_of_the_original_lot", rows, [], "\n[country.us]\ntimezone = UTC\n")
+        self.assertEqual(run_result.returncode, 0, msg=run_result.output)
+        in_out_rows: List[List[ReportCell]] = read_sheet_cells(run_result.report_path, "B1 In-Out") or []
+        lot_rows: List[List[ReportCell]] = [
+            cells for cells in read_sheet_cells(run_result.report_path, "B1 Tax") or [] if len(cells) > 19 and cells[18].text == "i1"
+        ]
+        self.assertEqual(len(lot_rows), 1)
+        cells: List[ReportCell] = lot_rows[0]
+        # The fraction, the unique id and the description of the lot; all link to i1's row of the In-Out sheet.
+        self.assertEqual(cells[13].text, "0.2")
+        self.assertRegex(cells[19].text, r"^1/1: 1\.00000000 of 2\.00000000 B1 in Kraken/Bob \(lot t1/-\d+\)$")
+        for cell in (cells[13], cells[18], cells[19]):
+            self.assertEqual(cell.link_sheet, "B1 In-Out")
+            link_row: int = cell.link_row or 0
+            self.assertEqual(in_out_rows[link_row - 1][14].text, "i1")
 
 
 if __name__ == "__main__":
