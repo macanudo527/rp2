@@ -803,6 +803,14 @@ class Generator(AbstractODSGenerator):
             return value
         return get_row_hyperlink(self.get_tax_sheet_name(asset), row, value)
 
+    # How the Gain / Loss Detail table names the original lot of a gain or loss: its unique id. If it has none and a date filter (-f, -t)
+    # leaves it out of the In-Out sheet, so that its cells have no link either, its row in the input file. Example: a purchase in row 4 of
+    # sheet B1 of the input, without unique id, made before the -f date: "row 4 of the B1 input sheet".
+    def __get_lot_reference(self, lot: InTransaction) -> str:
+        if lot.unique_id or self.__get_in_out_sheet_row(lot) is not None:
+            return lot.unique_id
+        return _("row {} of the {} input sheet").format(lot.row, lot.asset)
+
     def __get_in_out_sheet_row(self, transaction: AbstractTransaction) -> Optional[int]:
         if transaction not in self.__in_out_sheet_transaction_2_row:
             return None
@@ -972,7 +980,7 @@ class Generator(AbstractODSGenerator):
                     sheet,
                     row_index,
                     18,
-                    self.__get_hyperlinked_transaction_value(source_lot, source_lot.unique_id),
+                    self.__get_hyperlinked_transaction_value(source_lot, self.__get_lot_reference(source_lot)),
                     visual_style=acquired_lot_style,
                     data_style="fiat",
                 )

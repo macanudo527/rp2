@@ -118,6 +118,35 @@ class TestFullReportCells(unittest.TestCase):
             link_row: int = cell.link_row or 0
             self.assertEqual(in_out_rows[link_row - 1][14].text, "i1")
 
+    # A lot without unique id that a date filter leaves out of the In-Out sheet has no link: the Gain / Loss Detail table names it by its row
+    # in the input file instead. Example: a purchase without unique id in row 3 of sheet B1 of the input (after the IN line and the header),
+    # made before the -f date. Before, the cell was empty. Without -f, the lot has a row in the In-Out sheet and the cell links to it.
+    def test_lot_without_unique_id_before_the_start_date(self) -> None:
+        rows: List[List[Union[str, float]]] = [
+            ["IN"],
+            _IN_HEADER,
+            ["2024-01-10T15:00Z", "Kraken", "Bob", "", "", "Buy", "B1", 1.0, 100.0, "", "", 0.0, "", ""],
+            ["TABLE END"],
+            ["OUT"],
+            _OUT_HEADER,
+            ["2024-09-01T15:00Z", "Kraken", "Bob", "", "", "Sell", "B1", 0.5, 200.0, 0.0, "", "", "o1", ""],
+            ["TABLE END"],
+        ]
+        for name, arguments, want_text, want_link in (
+            ("lot_before_the_start_date", ["-f", "2024-06-01"], "row 3 of the B1 input sheet", False),
+            ("lot_in_the_report", [], "", True),
+        ):
+            with self.subTest(arguments=arguments):
+                run_result = self._run(name, rows, arguments)
+                self.assertEqual(run_result.returncode, 0, msg=run_result.output)
+                lot_cells: List[ReportCell] = [
+                    cells[18] for cells in read_sheet_cells(run_result.report_path, "B1 Tax") or [] if len(cells) > 19 and cells[10].text == "o1"
+                ]
+                got_texts: List[str] = [cell.text for cell in lot_cells]
+                want_texts: List[str] = [want_text]
+                self.assertEqual(got_texts, want_texts)
+                self.assertEqual(lot_cells[0].link_sheet is not None, want_link)
+
 
 if __name__ == "__main__":
     unittest.main()
